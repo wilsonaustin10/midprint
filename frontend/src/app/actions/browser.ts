@@ -66,6 +66,7 @@ export async function navigateTo(url: string, sessionId: string): Promise<Action
 
 export async function performAction(action: string, selector: string, value: string | undefined, sessionId: string): Promise<ActionResult> {
   try {
+    const browserPool = await getBrowserPool();
     const { page } = await browserPool.getBrowser(sessionId);
     const title = await page.title();
     const content = await safeGetPageContent(page, `${sessionId}`)

@@ -9,7 +9,23 @@ import { JSDOM } from 'jsdom';
  */
 export async function extractInteractiveElements(pageSource: string) {
     try {
-        const { window } = new JSDOM(pageSource);
+        // Before creating JSDOM instance
+        const strippedHTML = pageSource
+            .replace(/<link[^>]*rel=['"]stylesheet['"][^>]*>/gi, '')
+            .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+
+        const { window } = new JSDOM(strippedHTML, {
+            runScripts: "outside-only",
+            resources: "usable",
+            pretendToBeVisual: true,
+            includeNodeLocations: true,
+            storageQuota: 10000000,
+            features: {
+                FetchExternalResources: ['script'],
+                ProcessExternalResources: ['script'],
+                SkipExternalResources: /(css)/
+            }
+        });
         const { document } = window;
 
         // Extract clickable elements (links, buttons, etc.)
@@ -123,8 +139,11 @@ export async function extractInteractiveElements(pageSource: string) {
                     const text = node.textContent?.trim();
                     if (text) visibleTextNodes.push(text);
                 } else if (node.nodeType === 1) { // Element node
-                    const style = window.getComputedStyle(node);
-                    const isVisible = style.display !== 'none' && style.visibility !== 'hidden';
+                    const isVisible = !(
+                        node.hasAttribute('hidden') || 
+                        node.style.display === 'none' || 
+                        node.style.visibility === 'hidden'
+                    );
                     
                     if (isVisible) {
                         if (node.tagName.toLowerCase() === 'img' && node.alt) {
@@ -180,8 +199,24 @@ export async function getProcessedText(pageSource: string, baseUrl: string, opti
     } = options;
 
     try {
+        // Before creating JSDOM instance
+        const strippedHTML = pageSource
+            .replace(/<link[^>]*rel=['"]stylesheet['"][^>]*>/gi, '')
+            .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+
         // Use JSDOM instead of BeautifulSoup
-        const { window } = new JSDOM(pageSource);
+        const { window } = new JSDOM(strippedHTML, {
+            runScripts: "outside-only",
+            resources: "usable",
+            pretendToBeVisual: true,
+            includeNodeLocations: true,
+            storageQuota: 10000000,
+            features: {
+                FetchExternalResources: ['script'],
+                ProcessExternalResources: ['script'],
+                SkipExternalResources: /(css)/
+            }
+        });
         const { document } = window;
 
         // Remove tags

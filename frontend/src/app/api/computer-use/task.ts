@@ -41,8 +41,8 @@ export async function getPageInfo(sessionId: string, getAllData?: boolean) {
         url,
         title,
         screenshot: screenshotBase64,
-        clickableElements: [], // TODO: Revert back once token limit it resolved
-        formElements: [],
+        clickableElements, // TODO: Revert back once token limit it resolved
+        formElements,
         content: shortenedHtml
     }
     return pageInfo;
