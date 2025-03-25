@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { executeTaskLoop, getPageInfo } from "./task";
 import { omit } from "lodash";
+import { getBrowserPool } from "@/lib/browser-pool";
 
 /**
  * a server-side streaming endpoint. Only valid for GET requests
@@ -23,15 +24,18 @@ export async function GET(req: NextRequest) {
             return new Response("Missing sessionId", {status: 400})
         }
 
+        const browserPool = await getBrowserPool();
+        const browser = await browserPool.getBrowser(sessionId);
         // Provide periodic updates of the current browser state to the client
         const stream = new ReadableStream({
             async start(controller) {
                 const sendUpdate = async () => {
-                    const pageInfo = await getPageInfo(sessionId);
+                    const {content, ... pageInfo} = await getPageInfo(sessionId);
                     const data = JSON.stringify({
                         timestamp: new Date().toISOString(),
                         sessionId,
-                        pageInfo: omit(pageInfo, ["content"]), // Avoid emitting the content as it is a very large payload
+                        logs: browser.logs,
+                        pageInfo: pageInfo, // Avoid emitting the content as it is a very large payload
                     })
                     
                     controller.enqueue(`data: ${data}\n\n`)

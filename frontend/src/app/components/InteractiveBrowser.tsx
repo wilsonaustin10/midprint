@@ -129,7 +129,6 @@ export default function InteractiveBrowser({ sessionId, url, screenshot, formEle
 
     const handleNavigation = async (targetUrl: string) => {
         setIsLoading(true);
-        setUrl(targetUrl);
         try {
             console.log("Navigating to ", targetUrl)
             const result = await navigateTo(targetUrl, sessionId);

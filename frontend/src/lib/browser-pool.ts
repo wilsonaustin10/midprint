@@ -1,32 +1,50 @@
+import { Message } from '@/types/messages';
 import { chromium, Browser, Page } from 'playwright-core';
 
+/**
+ * Note: We MUST use this global pattern. A simples singleton pattern like `let browserPool;` will NOT work
+ */
+declare global {
+  // eslint-disable-next-line no-var
+  var browserPool: BrowserPool | undefined;
+}
 
-export let browserPool: BrowserPool;
-
+/**
+ * Returns a singleton instance of the BrowserPool
+ * @returns A singleton instance of the BrowserPool
+ */
 export async function getBrowserPool() {
-  if (!browserPool) {
-    browserPool = new BrowserPool();
+  if (!global.browserPool) {
+    console.log(`[getBrowserPool] Creating new BrowserPool instance`);
+    global.browserPool = new BrowserPool();
   }
-  return browserPool;
+  return global.browserPool;
 }
 
 export class BrowserPool {
-  private browsers: Map<string, { browser: Browser, page: Page, lastUsed: number }> = new Map();
+  private browsers: Map<string, { browser: Browser, logs: Message[], page: Page, lastUsed: number }> = new Map();
   private maxInstances: number;
 
   constructor(maxInstances = 10) {
     this.maxInstances = maxInstances;
   }
 
-  async getBrowser(id: string): Promise<{ browser: Browser, page: Page }> {
+  /**
+   * Gets a browser instance with the specified sessionId if it exists, otherwise creates a new one
+   * @param id 
+   * @returns 
+   */
+  async getBrowser(id: string): Promise<{ browser: Browser, page: Page, logs: Message[] }> {
     // Check if browser exists
     const existing = this.browsers.get(id);
     if (existing) {
-      console.debug(`Retrieving existing browser for id ${id}`)
+      console.log(`[BrowserPool] Retrieving existing browser for id ${id}, current URL: ${await existing.page.url()}`);
+      
       existing.lastUsed = Date.now();
-      return { browser: existing.browser, page: existing.page };
+      return { browser: existing.browser, page: existing.page, logs: existing.logs };
     }
-
+    console.log(`[BrowserPool] Creating new browser for id ${id}`);
+    
     // Clean up if needed
     if (this.browsers.size >= this.maxInstances) {
       await this.cleanup(true);
@@ -64,8 +82,8 @@ export class BrowserPool {
     });
     const page = await context.newPage();
 
-    this.browsers.set(id, { browser, page, lastUsed: Date.now() });
-    return { browser, page };
+    this.browsers.set(id, { browser, logs: [], page, lastUsed: Date.now() });
+    return { browser, page, logs: [] };
   }
 
   async releaseBrowser(id: string) {
@@ -76,13 +94,24 @@ export class BrowserPool {
     }
   }
 
-  async updateBrowserState(id: string, page: Page): Promise<void> {
+  /**
+   * Updates the browser state for the specified sessionId. Playwright automatically updates the state internally, so no need to re-assign
+   * @param id 
+   * @param logs 
+   * @returns 
+   */
+  async updateBrowserState(id: string, logs?: Message[]): Promise<void> {
     const existing = this.browsers.get(id);
-    if (existing) {
-      existing.lastUsed = Date.now();
-      existing.page = page;
-      this.browsers.set(id, existing);
+    if (!existing) {
+      console.error(`Browser for id ${id} not found`);
+      return;
     }
+    existing.lastUsed = Date.now();
+    console.log(`[updateBrowserState] Updating browser state for id ${id}, current URL: ${await existing.page.url()}`);
+    if (logs) {
+      existing.logs = logs;
+    }
+    this.browsers.set(id, existing);
   }
 
   private async cleanup(force = false) {

@@ -1,4 +1,4 @@
-import { browserPool, BrowserPool, getBrowserPool } from "@/lib/browser-pool";
+import { getBrowserPool } from "@/lib/browser-pool";
 import OpenAI from "openai"
 import { extractInteractiveElements, getProcessedText } from "../processing/getProcessedText";
 import { computerUseSystemPrompt, computerUseUserPrompt } from "@/lib/prompt-templates";
@@ -20,7 +20,10 @@ export async function getPageInfo(sessionId: string, getAllData?: boolean) {
 
     // Basic page data
     const content = await page.content();
-    const url = await page.url();
+    const currentUrl = await page.url();
+
+    console.log(`[getPageInfo] Current URL for session ${sessionId}: ${currentUrl}`);
+
     const screenshot = await page.screenshot({
         fullPage: false,
         quality: 80,
@@ -31,14 +34,12 @@ export async function getPageInfo(sessionId: string, getAllData?: boolean) {
     const title = await page.title();
 
     // Extract interactive elements from the page
-    const shortenedHtml = await getProcessedText(content, url)
+    const shortenedHtml = await getProcessedText(content, currentUrl)
     const { clickableElements, formElements, visibleText } = await extractInteractiveElements(content);
 
-    console.log("content: ", content.length)
-    console.log("shortenedHtml: ", shortenedHtml.length)
     // Create page info object
     const pageInfo = {
-        url,
+        url: currentUrl,
         title,
         screenshot: screenshotBase64,
         clickableElements, // TODO: Revert back once token limit it resolved

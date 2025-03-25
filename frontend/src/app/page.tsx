@@ -7,6 +7,7 @@ import InteractiveBrowser from "./components/InteractiveBrowser";
 
 
 const sessionId = crypto.randomUUID();
+console.log("Session id is", sessionId)
 
 export default function Home() {
   const [initialMessages, setInitialMessages] = useState<Message[]>([

@@ -22,16 +22,23 @@ export async function navigateTo(url: string, sessionId: string): Promise<Action
     const browserPool = await getBrowserPool();
     const { page } = await browserPool.getBrowser(sessionId);
     const formattedUrl = formatUrl(url)
-    console.debug(`${sessionId}: Navigating to ${formattedUrl}`)
+    console.log(`[navigateTo] Before navigation - Current URL: ${await page.url()}`);
+    console.log(`[navigateTo] Attempting to navigate to: ${formattedUrl}`);
+    
     await page.goto(formattedUrl, {
       waitUntil: "load"
     });
-    await browserPool.updateBrowserState(sessionId, page);
-
+    
+    console.log(`[navigateTo] After navigation - Current URL: ${await page.url()}`);
+    
     await waitForPageStability(page, {
       logPrefix: `${sessionId}`
     })
 
+    // const testurl = await page.url();
+    // console.log(`Updating browser state for ${sessionId} with url ${testurl}`)
+    await browserPool.updateBrowserState(sessionId);
+    
     const screenshot = await page.screenshot({
       type: SCREENSHOT_TYPE,
       quality: SCREENSHOT_QUALITY,
@@ -41,6 +48,7 @@ export async function navigateTo(url: string, sessionId: string): Promise<Action
     const title = await page.title();
 
     // Extract form elements
+    // TODO: Figure out if including this is event helpful in the first place
     const {formElements, clickableElements} = await extractInteractiveElements(content);
 
     const historyState = await getBrowserHistory(page);
@@ -212,7 +220,9 @@ async function waitForPageStability(page: Page, options: PageStabilityOptions) {
 }
 
 
-// New utility function to safely get page content
+/**
+ * utility function to safely get page content because sometimes page content isn't available 
+ * */ 
 async function safeGetPageContent(page: Page, logPrefix = '') {
   try {
     return await page.content();
