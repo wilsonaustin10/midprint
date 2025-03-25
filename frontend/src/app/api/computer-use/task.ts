@@ -114,10 +114,6 @@ export async function executeTaskLoop(model: string, userMessage: string, sessio
                 const result = await executeFunction(responseMessage.function_call, sessionId);
                 console.debug(`Function ${responseMessage.function_call.name} success: ${result ? result.success : 'Result is null'}`);
 
-                // messageHistory.push({
-                //     role: "assistant",
-                //     content: `Executed function ${responseMessage.function_call.name} with result: ${result ? result.success : 'Result is null'}`,
-                // })
             } else {
                 try {
                     if (responseMessage.content) {

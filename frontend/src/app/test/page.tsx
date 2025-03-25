@@ -8,6 +8,7 @@ import { Message } from "@/types/messages";
 import { useEffect, useRef, useState } from "react";
 import ChatMessage from "../components/ChatMessage";
 import { io, Socket } from "socket.io-client";
+import UpdateListener from "./update-listener";
 
 const sessionId = crypto.randomUUID();
 
@@ -41,53 +42,53 @@ export default function TestPage() {
 
 
     useEffect(() => {
-        if (sessionId) {
-            fetch(`/api/ws?sessionId=${sessionId}`)
-                .then(response => {
-                    if (response.ok) {
-                        const socket = io({
-                            path: "/api/ws",
-                            query: {
-                                sessionId
-                            },
-                            transports: ["websocket"],
-                            reconnectionAttempts: 5,
-                            reconnectionDelay: 1000,
-                        })
+        // if (sessionId) {
+        //     fetch(`/api/ws?sessionId=${sessionId}`)
+        //         .then(response => {
+        //             if (response.ok) {
+        //                 const socket = io({
+        //                     path: "/api/ws",
+        //                     query: {
+        //                         sessionId
+        //                     },
+        //                     transports: ["websocket"],
+        //                     reconnectionAttempts: 5,
+        //                     reconnectionDelay: 1000,
+        //                 })
 
 
-                        socket.on("connect", () => {
-                            console.log("Connected to server")
-                        })
+        //                 socket.on("connect", () => {
+        //                     console.log("Connected to server")
+        //                 })
 
-                        socket.on("welcome", (data) => {
-                            console.log("Welcome message from server", data)
-                        })
+        //                 socket.on("welcome", (data) => {
+        //                     console.log("Welcome message from server", data)
+        //                 })
 
-                        socket.on("client-message", (data) => {
-                            console.log("Client message", data)
-                        })
+        //                 socket.on("client-message", (data) => {
+        //                     console.log("Client message", data)
+        //                 })
                         
-                        socket.on("disconnect", () => {
-                            console.log("Disconnected from server")
-                        })
+        //                 socket.on("disconnect", () => {
+        //                     console.log("Disconnected from server")
+        //                 })
 
-                        socketRef.current = socket;
+        //                 socketRef.current = socket;
 
-                    } else {
-                        console.error("Failed to connect to server")
-                    }
-                })
-                .catch(error => {
-                    console.error("Error connecting to server", error)
-                })
-        }
+        //             } else {
+        //                 console.error("Failed to connect to server")
+        //             }
+        //         })
+        //         .catch(error => {
+        //             console.error("Error connecting to server", error)
+        //         })
+        // }
 
-        return () => {
-            if (socketRef.current) {
-                socketRef.current.disconnect();
-            }
-        }
+        // return () => {
+        //     if (socketRef.current) {
+        //         socketRef.current.disconnect();
+        //     }
+        // }
     }, [])
     const handleButtonClick = async () => {
 
@@ -126,6 +127,7 @@ export default function TestPage() {
                     <ChatMessage key={index} {...message} />
                 ))}
             </div>
+            <UpdateListener sessionId={sessionId} />
         </div>
     )
 }

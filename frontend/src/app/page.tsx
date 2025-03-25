@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import ChatBox from "./components/ChatBox";
 import { Message } from "../types/messages";
 import InteractiveBrowser from "./components/InteractiveBrowser";
@@ -35,6 +35,25 @@ export default function Home() {
   const [url, setUrl] = useState<string>('https://google.com')
 
 
+  useEffect(() => {
+    const eventSource = new EventSource(`/api/computer-use?sessionId=${sessionId}`)
+
+    eventSource.onmessage = (event) => {
+      const {pageInfo} = JSON.parse(event.data);
+      updateBrowserState(pageInfo)
+    }
+
+    eventSource.onerror = (error) => {
+      console.error("Error fetching computer use updates:", error)
+      eventSource.close()
+    }
+
+    return () => {
+      eventSource.close();
+    }
+    
+  }, [sessionId])
+
   // Add this function to update browser state from API responses
   const updateBrowserState = (result: any) => {
     if (result.screenshot) {
@@ -53,6 +72,8 @@ export default function Home() {
       setUrl(result.url)
     }
   }
+
+
 
   return (
     <div className="flex flex-col min-h-screen">
