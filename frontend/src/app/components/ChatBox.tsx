@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button"
 import { Message } from "../../types/messages"
 import { Textarea } from "@/components/ui/textarea"
 import { processStream } from "@/lib/llm-text"
+import { performAction, navigateTo } from "@/app/actions/browser"
+import { BrowserActions } from "@/app/api/browser-service/actions"
 
 type P = {
     initialMessages: Message[];
@@ -70,26 +72,92 @@ export default function ChatBox({ initialMessages, sessionId, updateBrowserState
 
         currentResponseRef.current = "";
         try {
-            setMessages(prevMessages => [...prevMessages, { content: "", role: "assistant" }])
-            const response = await fetch("/api/computer-use", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify(
-                    { 
-                        messages,
-                        userMessage: inputMessage,
+            setMessages(prevMessages => [...prevMessages, { content: "Processing your action...", role: "assistant" }])
+            
+            let result;
+            const userInput = inputMessage.trim();
+            
+            // Check if input looks like a URL
+            if (userInput.startsWith('http://') || userInput.startsWith('https://') || 
+                userInput.match(/^[a-zA-Z0-9-]+\.[a-zA-Z]{2,}(\.[a-zA-Z]{2,})?$/)) {
+                // Handle as URL navigation
+                const url = userInput.startsWith('http') ? userInput : `https://${userInput}`;
+                result = await navigateTo(url, sessionId);
+                
+                if (result.success) {
+                    setMessages(prevMessages => {
+                        const newMessages = [...prevMessages];
+                        newMessages[newMessages.length - 1] = { 
+                            content: `Successfully navigated to: ${url}`, 
+                            role: "assistant" 
+                        };
+                        return newMessages;
+                    });
+                } else {
+                    setMessages(prevMessages => {
+                        const newMessages = [...prevMessages];
+                        newMessages[newMessages.length - 1] = { 
+                            content: `Failed to navigate to: ${url}`, 
+                            role: "assistant" 
+                        };
+                        return newMessages;
+                    });
+                }
+            } else {
+                // Try to parse as search query
+                result = await performAction(
+                    BrowserActions.FILL_INPUT, 
+                    'input[type="text"], input[type="search"], textarea', 
+                    userInput,
+                    sessionId
+                );
+                
+                if (result.success) {
+                    // After filling input, try to submit the form
+                    const submitResult = await performAction(
+                        BrowserActions.PRESS,
+                        'input[type="text"], input[type="search"], textarea',
+                        'Enter',
                         sessionId
-                    }
-                )
-            })
-            const data = await response.json();
-            console.log(data);
-
-            updateBrowserState(data.pageInfo);
+                    );
+                    
+                    result = submitResult; // Use the result of the submission
+                    
+                    setMessages(prevMessages => {
+                        const newMessages = [...prevMessages];
+                        newMessages[newMessages.length - 1] = { 
+                            content: `Searched for: ${userInput}`, 
+                            role: "assistant" 
+                        };
+                        return newMessages;
+                    });
+                } else {
+                    setMessages(prevMessages => {
+                        const newMessages = [...prevMessages];
+                        newMessages[newMessages.length - 1] = { 
+                            content: `Could not perform search for: ${userInput}. Try entering a URL instead.`, 
+                            role: "assistant" 
+                        };
+                        return newMessages;
+                    });
+                }
+            }
+            
+            // Update the browser state with the result
+            if (result && result.success) {
+                updateBrowserState(result);
+            }
         } catch (error) {
-            console.error("Error generating computer use response:", error)
+            console.error("Error performing browser action:", error);
+            setMessages(prevMessages => {
+                // Update the last message with an error message
+                const newMessages = [...prevMessages];
+                newMessages[newMessages.length - 1] = { 
+                    content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`, 
+                    role: "assistant" 
+                };
+                return newMessages;
+            });
         } finally {
             setIsLoading(false)
         }
