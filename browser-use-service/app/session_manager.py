@@ -18,8 +18,8 @@ class LinkedInSessionManager:
         """
         self.storage_dir = Path(storage_dir)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
-        self.cookie_file = self.storage_dir / "linkedin_cookies.json"
-        self.session_file = self.storage_dir / "linkedin_session.json"
+        self.cookie_file = self.storage_dir / "cookies.json"
+        self.session_file = self.storage_dir / "session.json"
         
     async def is_logged_in(self, browser: Browser) -> bool:
         """
