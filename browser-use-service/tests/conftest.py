@@ -246,4 +246,4 @@ async def api_client():
 @pytest.fixture
 def api_base_url():
     """Provide the base URL for API testing."""
-    return "http://localhost:8002" 
+    return "http://localhost:8003" 

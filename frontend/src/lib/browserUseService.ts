@@ -1,6 +1,6 @@
 import { TaskState } from '@/types/browserUse';
 
-const BROWSER_USE_API = process.env.NEXT_PUBLIC_BROWSER_USE_API || 'http://localhost:8002';
+const BROWSER_USE_API = process.env.NEXT_PUBLIC_BROWSER_USE_API || 'http://localhost:8003';
 
 export class BrowserUseService {
   private static instance: BrowserUseService;

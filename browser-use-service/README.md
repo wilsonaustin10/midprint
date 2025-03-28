@@ -22,7 +22,7 @@ playwright install chromium
 
 4. Create a `.env` file with required environment variables:
 ```bash
-PORT=8000
+PORT=8003
 OPENAI_API_KEY=your_api_key_here
 ```
 
@@ -35,10 +35,10 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 2. Start the service:
 ```bash
-python app/main.py
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8003
 ```
 
-The service will be available at `http://localhost:8000`
+The service will be available at `http://localhost:8003`
 
 ## API Endpoints
 
@@ -48,5 +48,5 @@ The service will be available at `http://localhost:8000`
 ## Development
 
 - Run tests: `pytest tests/`
-- API documentation available at: `http://localhost:8000/docs`
-- ReDoc documentation available at: `http://localhost:8000/redoc` 
+- API documentation available at: `http://localhost:8003/docs`
+- ReDoc documentation available at: `http://localhost:8003/redoc` 

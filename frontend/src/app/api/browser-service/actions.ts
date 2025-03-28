@@ -12,7 +12,7 @@ export enum BrowserActions {
 }
 
 // Service endpoint URLs
-export const SERVICE_BASE_URL = 'http://localhost:8002';
+export const SERVICE_BASE_URL = 'http://localhost:8003';
 export const ENDPOINTS = {
   RUN_AGENT: '/run-agent',
   TASK_STATUS: '/task',

@@ -29,7 +29,7 @@ class TestServer(uvicorn.Server):
 @pytest.fixture(scope="module")
 def test_server():
     """Fixture to run the FastAPI server during tests."""
-    config = uvicorn.Config(app, host="127.0.0.1", port=8002, log_level="error")
+    config = uvicorn.Config(app, host="127.0.0.1", port=8003, log_level="error")
     server = TestServer(config=config)
     
     def run_server():
@@ -56,7 +56,7 @@ class TestIntegration:
     @pytest.fixture
     def api_base_url(self):
         """Fixture to provide the API base URL."""
-        return f"http://{os.getenv('TEST_HOST', 'localhost')}:{os.getenv('TEST_PORT', '8002')}"
+        return f"http://{os.getenv('TEST_HOST', 'localhost')}:{os.getenv('TEST_PORT', '8003')}"
             
     @pytest.mark.asyncio
     async def test_end_to_end_workflow(self, test_server, api_client, api_base_url, test_credentials, metrics_collector):
