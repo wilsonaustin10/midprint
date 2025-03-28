@@ -1,6 +1,6 @@
 import { TaskState } from '@/types/browserUse';
 
-const BROWSER_USE_API = process.env.NEXT_PUBLIC_BROWSER_USE_API || 'http://localhost:8000';
+const BROWSER_USE_API = process.env.NEXT_PUBLIC_BROWSER_USE_API || 'http://localhost:8002';
 
 export class BrowserUseService {
   private static instance: BrowserUseService;
@@ -24,6 +24,16 @@ export class BrowserUseService {
       body: JSON.stringify({
         task,
         max_steps: maxSteps,
+        config: {
+          llm: {
+            provider: 'openai',
+            model: 'gpt-4'
+          }
+        },
+        browser_info: {
+          browser_type: 'chromium',
+          headless: true
+        }
       }),
     });
 

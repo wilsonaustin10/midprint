@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { navigateTo, performAction, ActionResult } from '@/app/actions/browser'
-import { BrowserActions } from '@/app/api/computer-use/actions'
+import { BrowserActions } from '@/app/api/browser-service/actions'
 import Image from 'next/image'
 import { useDebounce } from 'use-debounce'
 import LoginCredentialsDialog from './LoginCredentialsDialog'
