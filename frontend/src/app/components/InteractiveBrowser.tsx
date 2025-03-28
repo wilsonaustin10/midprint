@@ -3,53 +3,41 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
-import { navigateTo, performAction } from '@/app/actions/browser'
+import { navigateTo, performAction, ActionResult } from '@/app/actions/browser'
+import { BrowserActions } from '@/app/api/computer-use/actions'
 import Image from 'next/image'
 import { useDebounce } from 'use-debounce'
+import LoginCredentialsDialog from './LoginCredentialsDialog'
+import { FormElement } from '@/types/common'
 
 export type P = {
     sessionId: string;
     url: string;
     screenshot: string;
     pageTitle: string;
-    formElements: {
-        tagName: string;
-        id: string;
-        name: string;
-        type: string;
-        value: string;
-        x: number;
-        y: number;
-        width: number;
-        height: number;
-    }[]
+    formElements: FormElement[];
     historyState: {
         canGoBack?: boolean;
         canGoForward?: boolean;
     }
     setUrl: (url: string) => void;
-    updateBrowserState: (result: any) => void
+    updateBrowserState: (result: ActionResult) => void
 }
 
 export default function InteractiveBrowser({ sessionId, url, screenshot, formElements, historyState, setUrl, updateBrowserState }: P) {
     
     const [isLoading, setIsLoading] = useState<boolean>(false)
     const [logs, setLogs] = useState<string[]>([])
+    const [isLoginDialogOpen, setIsLoginDialogOpen] = useState(false)
+    const [loginFields, setLoginFields] = useState<{
+        username: { id: string; name: string; testId: string; },
+        password: { id: string; name: string; testId: string; }
+    } | null>(null)
     
     const [text, setText] = useState<string>('')
     const [value] = useDebounce(text, 1000)
     const browserRef = useRef<HTMLDivElement>(null)
-    const [focusedFormElement, setFocusedFormElement] = useState<{
-        tagName: string;
-        id: string;
-        name: string;
-        type: string;
-        value: string;
-        x: number;
-        y: number;
-        width: number;
-        height: number;
-    } | null>(null)
+    const [focusedFormElement, setFocusedFormElement] = useState<FormElement | null>(null)
 
     // State variables to handle auto-refresh of site screenshots
     const [autoRefresh, setAutoRefresh] = useState<boolean>(false);
@@ -142,7 +130,7 @@ export default function InteractiveBrowser({ sessionId, url, screenshot, formEle
                     toggleAutoRefresh(true);  // Start new timer
                 }
             } else {
-                addLog(`Error: ${result.error || 'Unknown error'}`);
+                addLog(`Navigation failed`);
             }
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -153,31 +141,26 @@ export default function InteractiveBrowser({ sessionId, url, screenshot, formEle
     }
 
     const handleAction = useCallback(async (action: string, selector: string, value?: string) => {
-        // setIsLoading(true);
         try {
             const result = await performAction(action, selector, value, sessionId);
             console.log("Result", result)
             if (result.success) {
                 updateBrowserState(result);
-                if (result.extractedText) {
-                    addLog(`Extracted: ${result.extractedText}`);
+                if (action === BrowserActions.EXTRACT) {
+                    addLog(`Extracted content from ${selector}`);
+                } else if (action === BrowserActions.MOUSE_CLICK) {
+                    addLog(`Performed ${action} on x-y coordinates ${value}`)
                 } else {
-                    if (action === "mouseClick") {
-                        addLog(`Performed ${action} on x-y coordinates ${value}`)
-                    } else {
-                        addLog(`Performed ${action} ${selector ? 'on ' + selector : ''}`);
-                    }
+                    addLog(`Performed ${action} ${selector ? 'on ' + selector : ''}`);
                 }
             } else {
-                addLog(`Error: ${result.error || 'Unknown error'}`);
+                addLog(`Action failed`);
             }
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             addLog(`Error: ${errorMessage}`);
-        } finally {
-            // setIsLoading(false);
         }
-    }, [sessionId])
+    }, [sessionId, updateBrowserState, addLog])
 
     const handleScreenshotClick = async (e: React.MouseEvent<HTMLImageElement>) => {
         if (!browserRef.current) return;
@@ -290,6 +273,183 @@ export default function InteractiveBrowser({ sessionId, url, screenshot, formEle
         console.log("Focused form element", focusedFormElement)
         handleAction('press', focusedFormElement ? `#${focusedFormElement.id}` : '', 'Enter')
     }
+
+    // Add login detection function
+    const detectLoginForm = useCallback(() => {
+        console.log('Checking form elements for login fields:', formElements);
+        
+        // Check for username/email field with expanded criteria
+        const usernameField = formElements.find(el => {
+            const fieldType = el.inputType?.toLowerCase() || '';
+            const fieldName = el.name?.toLowerCase() || '';
+            const fieldId = el.id?.toLowerCase() || '';
+            const ariaLabel = el.ariaLabel?.toLowerCase() || '';
+            const placeholder = el.placeholder?.toLowerCase() || '';
+            const value = el.value?.toLowerCase() || '';
+            const testId = el.dataTestId?.toLowerCase() || '';
+            const role = el.role?.toLowerCase() || '';
+            
+            console.log('Checking field for username:', {
+                fieldType,
+                fieldName,
+                fieldId,
+                ariaLabel,
+                placeholder,
+                value,
+                testId,
+                role
+            });
+            
+            const isTextInput = fieldType === 'text' || fieldType === 'email' || !fieldType;
+            const hasLoginIdentifier = 
+                fieldName.includes('user') || 
+                fieldName.includes('email') || 
+                fieldName.includes('username') ||
+                fieldId.includes('user') || 
+                fieldId.includes('email') ||
+                fieldId.includes('username') ||
+                ariaLabel?.includes('username') ||
+                ariaLabel?.includes('email') ||
+                placeholder?.includes('username') ||
+                placeholder?.includes('email') ||
+                placeholder?.includes('phone') || // Twitter allows phone login
+                value?.includes('username') ||
+                value?.includes('email') ||
+                testId?.includes('username') ||
+                testId?.includes('email') ||
+                testId?.includes('text-input') ||
+                role === 'textbox';
+
+            return isTextInput && hasLoginIdentifier;
+        });
+
+        // Check for password field with expanded criteria
+        const passwordField = formElements.find(el => {
+            const fieldType = el.inputType?.toLowerCase() || '';
+            const fieldName = el.name?.toLowerCase() || '';
+            const fieldId = el.id?.toLowerCase() || '';
+            const ariaLabel = el.ariaLabel?.toLowerCase() || '';
+            const placeholder = el.placeholder?.toLowerCase() || '';
+            const testId = el.dataTestId?.toLowerCase() || '';
+            const role = el.role?.toLowerCase() || '';
+            
+            console.log('Checking field for password:', {
+                fieldType,
+                fieldName,
+                fieldId,
+                ariaLabel,
+                placeholder,
+                testId,
+                role
+            });
+            
+            return fieldType === 'password' || 
+                   fieldName.includes('pass') || 
+                   fieldId.includes('pass') ||
+                   ariaLabel?.includes('password') ||
+                   placeholder?.includes('password') ||
+                   testId?.includes('password') ||
+                   (role === 'textbox' && (fieldName.includes('pass') || fieldId.includes('pass')));
+        });
+
+        console.log('Login detection results:', {
+            usernameField,
+            passwordField
+        });
+
+        if (usernameField && passwordField) {
+            setLoginFields({
+                username: { 
+                    id: usernameField.id || '', 
+                    name: usernameField.name || '',
+                    testId: usernameField.dataTestId || ''
+                },
+                password: { 
+                    id: passwordField.id || '', 
+                    name: passwordField.name || '',
+                    testId: passwordField.dataTestId || ''
+                }
+            });
+            setIsLoginDialogOpen(true);
+            addLog('Login form detected');
+        }
+    }, [formElements, addLog]);
+
+    // Check for login form when formElements change
+    useEffect(() => {
+        detectLoginForm();
+    }, [formElements, detectLoginForm]);
+
+    // Handle login credentials submission
+    const handleLoginSubmit = async (username: string, password: string) => {
+        if (!loginFields) return;
+
+        try {
+            // Fill username field
+            await handleAction(
+                BrowserActions.FILL_INPUT,
+                loginFields.username.id ? `#${loginFields.username.id}` : 
+                loginFields.username.testId ? `[data-testid="${loginFields.username.testId}"]` :
+                `[name="${loginFields.username.name}"]`,
+                username
+            );
+
+            // Fill password field
+            await handleAction(
+                BrowserActions.FILL_INPUT,
+                loginFields.password.id ? `#${loginFields.password.id}` : 
+                loginFields.password.testId ? `[data-testid="${loginFields.password.testId}"]` :
+                `[name="${loginFields.password.name}"]`,
+                password
+            );
+
+            // Find and click the submit button with expanded criteria
+            const submitButton = formElements.find(el => {
+                const type = el.inputType?.toLowerCase() || '';
+                const value = el.value?.toLowerCase() || '';
+                const tagName = el.tagName?.toLowerCase() || '';
+                const ariaLabel = el.ariaLabel?.toLowerCase() || '';
+                const testId = el.dataTestId?.toLowerCase() || '';
+                const role = el.role?.toLowerCase() || '';
+                
+                return type === 'submit' || 
+                       value?.includes('login') || 
+                       value?.includes('sign in') ||
+                       testId?.includes('login') ||
+                       testId?.includes('signin') ||
+                       (tagName === 'button' && (
+                           value?.includes('login') || 
+                           value?.includes('sign in') ||
+                           ariaLabel?.includes('login') ||
+                           ariaLabel?.includes('sign in') ||
+                           role === 'button'
+                       ));
+            });
+
+            if (submitButton) {
+                await handleAction(
+                    BrowserActions.CLICK_ELEMENT,
+                    submitButton.id ? `#${submitButton.id}` : 
+                    submitButton.dataTestId ? `[data-testid="${submitButton.dataTestId}"]` :
+                    submitButton.selector,
+                );
+            } else {
+                // If no submit button found, try pressing Enter on the password field
+                await handleAction(
+                    BrowserActions.PRESS,
+                    loginFields.password.id ? `#${loginFields.password.id}` : 
+                    loginFields.password.testId ? `[data-testid="${loginFields.password.testId}"]` :
+                    `[name="${loginFields.password.name}"]`,
+                    'Enter'
+                );
+            }
+
+            addLog('Login credentials submitted');
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            addLog(`Login error: ${errorMessage}`);
+        }
+    };
 
     return (
         <div className="flex flex-col h-full border rounded-md overflow-hidden bg-white">
@@ -424,6 +584,13 @@ export default function InteractiveBrowser({ sessionId, url, screenshot, formEle
                     ))}
                 </div>
             </div>
+
+            {/* Add LoginCredentialsDialog */}
+            <LoginCredentialsDialog
+                isOpen={isLoginDialogOpen}
+                onClose={() => setIsLoginDialogOpen(false)}
+                onSubmit={handleLoginSubmit}
+            />
         </div>
     )
 }

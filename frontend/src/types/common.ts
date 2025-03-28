@@ -18,6 +18,8 @@ export type FormElement = {
     isVisible: boolean;
     ariaLabel: string | null;
     ariaDescription: string | null;
+    dataTestId: string | null;
+    role: string | null;
 }
 
 export type ClickableElement = {

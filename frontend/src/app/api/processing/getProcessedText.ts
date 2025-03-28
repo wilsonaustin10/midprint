@@ -74,7 +74,27 @@ export async function extractInteractiveElements(pageSource: string) {
         
         // Extract form elements (inputs, textareas, selects, etc.)
         const formElements = Array.from(
-            document.querySelectorAll('input, textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"], [role="checkbox"], [role="radio"], [role="button"], [role="link"]')
+            document.querySelectorAll(`
+                input,
+                textarea,
+                select,
+                [contenteditable="true"],
+                [role="textbox"],
+                [role="combobox"],
+                [role="checkbox"],
+                [role="radio"],
+                [role="button"],
+                [role="link"],
+                [role="spinbutton"],
+                [role="searchbox"],
+                [data-testid*="input"],
+                [data-testid*="field"],
+                [data-testid*="text"],
+                [data-testid*="username"],
+                [data-testid*="password"],
+                [data-testid*="login"],
+                [data-testid*="signin"]
+            `.trim().replace(/\s+/g, ','))
         ).map(element => {
             const rect = element.getBoundingClientRect();
             const isVisible = !!(
@@ -87,14 +107,16 @@ export async function extractInteractiveElements(pageSource: string) {
             // Generate a useful selector for this element
             const id = element.id ? `#${element.id}` : '';
             const name = element.getAttribute('name') ? `[name="${element.getAttribute('name')}"]` : '';
+            const testId = element.getAttribute('data-testid') ? `[data-testid="${element.getAttribute('data-testid')}"]` : '';
             const classes = Array.from(element.classList).map(c => `.${c}`).join('');
             const tagName = element.tagName.toLowerCase();
             const selectorParts = [];
             
             if (id) selectorParts.push(id);
             if (name) selectorParts.push(name);
+            if (testId) selectorParts.push(testId);
             if (classes) selectorParts.push(classes);
-            if (!id && !name && !classes) selectorParts.push(tagName);
+            if (!id && !name && !testId && !classes) selectorParts.push(tagName);
             
             const selector = selectorParts.join('') || tagName;
             
@@ -121,10 +143,11 @@ export async function extractInteractiveElements(pageSource: string) {
                 y: Math.round(rect.top),
                 width: Math.round(rect.width),
                 height: Math.round(rect.height),
-                // isVisible: true, // TODO: Check if this is even needed
-                isVisible, // TODO: Check if this is even needed
+                isVisible,
                 ariaLabel: element.getAttribute('aria-label') || null,
-                ariaDescription: element.getAttribute('aria-description') || null
+                ariaDescription: element.getAttribute('aria-description') || null,
+                dataTestId: element.getAttribute('data-testid') || null,
+                role: element.getAttribute('role') || null
             };
         }).filter(el => el.isVisible); // Only include visible elements
         
