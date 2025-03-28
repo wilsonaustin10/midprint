@@ -12,6 +12,8 @@ from datetime import datetime
 from fastapi.testclient import TestClient
 from app.main import app
 from browser_use.controller.service import Controller
+from browser_use.agent.views import ActionResult
+import pytest_asyncio
 
 # Load test environment variables
 load_dotenv(".env.test")
@@ -26,20 +28,37 @@ class MockBrowser:
         self.current_url = None
         self.context = MockContext()
         self.is_logged_in = False
+        self.page = MockPage()
+        # Track if this is an expired session
+        self.has_expired_session = False
+        # Track if this is an invalid credentials situation
+        self.has_invalid_credentials = False
 
     async def goto(self, url):
         self.current_url = url
+        # Simulate redirect to login page if not logged in
+        if not self.is_logged_in and "linkedin.com" in url:
+            self.current_url = "https://www.linkedin.com/login"
         return True
 
     async def wait_for_selector(self, selector, timeout=5000):
+        # Return None for expired sessions to simulate elements not found
+        if self.has_expired_session:
+            return None
         return MockElement()
 
     async def fill(self, selector, value):
+        # Track invalid credentials in username field
+        if selector == "#username" and value == "invalid@example.com":
+            self.has_invalid_credentials = True
         return True
 
     async def click(self, selector):
+        # Simulate successful login
         if selector == "#signin-submit" or selector == 'button[type="submit"]':
-            self.is_logged_in = True
+            # Don't login if credentials are invalid
+            if not self.has_invalid_credentials:
+                self.is_logged_in = True
         return True
 
     async def close(self):
@@ -48,14 +67,24 @@ class MockBrowser:
         return True
         
     async def get_current_page(self):
-        return MockPage()
+        return self.page
 
 class MockContext:
     """Mock browser context for testing."""
+    def __init__(self):
+        self._cookies = [{"name": "test_cookie", "value": "test_value", "domain": "linkedin.com"}]
+        self._is_expired = False
+    
     async def cookies(self):
-        return [{"name": "test_cookie", "value": "test_value", "domain": "linkedin.com"}]
+        return self._cookies
 
     async def add_cookies(self, cookies):
+        self._cookies = cookies
+        # Check if this is an expired session
+        if cookies and isinstance(cookies, list) and len(cookies) > 0:
+            # If cookies contain expired flag, track it
+            if any(isinstance(c, dict) and c.get("expired") for c in cookies):
+                self._is_expired = True
         return True
 
     async def new_page(self):
@@ -117,7 +146,7 @@ def test_browser_info() -> Dict[str, Any]:
         "headless": True
     }
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def browser():
     """Provide a mock browser instance for testing."""
     browser = MockBrowser(config=BrowserConfig(headless=True))
@@ -127,18 +156,46 @@ async def browser():
 @pytest.fixture
 def controller(browser):
     """Provide a controller instance for testing."""
-    return Controller(browser)
+    mock_controller = Controller(exclude_actions=[])
+    
+    # Add a mock execute_action method to the controller
+    async def execute_action(action_description, params):
+        """Mock execute_action method for testing."""
+        # Extract action name from description for easier matching
+        action_lower = action_description.lower()
+        
+        # Check if the profile identifier is invalid and action is for profile saving
+        if "save a linkedin profile" in action_lower and "invalid" in params.get('profile_identifier', '').lower():
+            return ActionResult(error="Invalid profile URL")
+        # Simulate successful results for different actions
+        elif "sales navigator search" in action_lower:
+            return ActionResult(extracted_content=f"Searched for '{params.get('query')}' in Sales Navigator")
+        elif "save a linkedin profile" in action_lower:
+            return ActionResult(extracted_content=f"Saved profile {params.get('profile_identifier')} to list")
+        elif "connection request" in action_lower:
+            return ActionResult(extracted_content=f"Sent connection request to {params.get('profile_identifier')}")
+        elif "message" in action_lower:
+            return ActionResult(extracted_content=f"Sent message to {params.get('profile_identifier')}")
+        else:
+            return ActionResult(extracted_content="Action executed successfully")
+    
+    # Attach the execute_action method to the controller instance
+    mock_controller.execute_action = execute_action
+    return mock_controller
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def session_manager(browser):
     """Provide a session manager instance for testing."""
-    manager = LinkedInSessionManager(browser)
+    manager = LinkedInSessionManager(storage_dir="test_sessions")
+    manager.browser = browser  # Set the browser attribute separately
     return manager
 
 @pytest.fixture
-def linkedin_actions():
+def linkedin_actions(controller):
     """Fixture to provide LinkedIn actions instance."""
-    return LinkedInActions()
+    actions = LinkedInActions(controller=controller)
+    actions.register_actions()
+    return actions
 
 class MetricsCollector:
     """Collect metrics during tests."""
