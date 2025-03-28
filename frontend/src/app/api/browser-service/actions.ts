@@ -17,7 +17,14 @@ export const ENDPOINTS = {
   RUN_AGENT: '/run-agent',
   TASK_STATUS: '/task',
   LOGIN: '/login',
-  HEALTH: '/health'
+  HEALTH: '/health',
+  // Add direct browser endpoints
+  BROWSER_CREATE: '/browser/create',
+  BROWSER_NAVIGATE: (sessionId: string) => `/browser/${sessionId}/navigate`,
+  BROWSER_ACTION: (sessionId: string) => `/browser/${sessionId}/action`,
+  BROWSER_SCREENSHOT: (sessionId: string) => `/browser/${sessionId}/screenshot`,
+  BROWSER_FORM_ELEMENTS: (sessionId: string) => `/browser/${sessionId}/form_elements`,
+  BROWSER_REFRESH: (sessionId: string) => `/browser/${sessionId}/refresh`
 };
 
 export interface BrowserServiceResponse {

@@ -53,10 +53,24 @@ export default function InteractiveBrowser({ sessionId, url, screenshot, formEle
         }
 
         const initBrowser = async () => {
-            // Wait a short delay for the session to be properly initialized
-            await new Promise(resolve => setTimeout(resolve, 100))
-            await handleNavigation(url);
-            
+            try {
+                // Wait a short delay for the session to be properly initialized
+                await new Promise(resolve => setTimeout(resolve, 100))
+                
+                // First try to navigate to the URL if it's provided
+                if (url) {
+                    await handleNavigation(url);
+                } else {
+                    // If no URL is provided, refresh the screenshot
+                    await refreshScreenshot();
+                }
+                
+                // Log success
+                addLog('Browser initialized successfully');
+            } catch (error) {
+                const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+                addLog(`Error initializing browser: ${errorMessage}`);
+            }
         }
 
         initBrowser();
@@ -67,7 +81,7 @@ export default function InteractiveBrowser({ sessionId, url, screenshot, formEle
                 refreshTimerRef.current = null;
             }
         };
-    }, [sessionId]);
+    }, [sessionId, url]);
 
 
     // Add this function to start/stop the auto-refresh
@@ -539,7 +553,7 @@ export default function InteractiveBrowser({ sessionId, url, screenshot, formEle
                     </div>
                 )}
 
-                {screenshot && (
+                {screenshot ? (
                     <Image
                         src={screenshot}
                         alt="Browser content"
@@ -548,6 +562,19 @@ export default function InteractiveBrowser({ sessionId, url, screenshot, formEle
                         width={1000}
                         height={1000}
                     />
+                ) : (
+                    <div className="flex items-center justify-center h-full">
+                        <div className="text-center p-6">
+                            <h3 className="text-lg font-semibold mb-2">No browser content available</h3>
+                            <p className="text-gray-600 mb-4">Either enter a URL above or refresh the browser.</p>
+                            <button 
+                                className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+                                onClick={refreshScreenshot}
+                            >
+                                Refresh Browser
+                            </button>
+                        </div>
+                    </div>
                 )}
             </div>
 

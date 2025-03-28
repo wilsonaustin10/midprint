@@ -9,6 +9,10 @@ import uvicorn
 from dotenv import load_dotenv
 from browser_use import Agent, Controller
 from browser_use.browser.browser import Browser, BrowserConfig
+# Import and apply our patch to fix the Browser class
+from .browser_patch import patch_browser
+patch_browser()  # Apply the patch
+
 from .linkedin_actions import LinkedInActions
 from .session_manager import LinkedInSessionManager
 import asyncio
@@ -758,6 +762,79 @@ async def browser_navigate(
     except Exception as e:
         print(f"Error navigating for task {task_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error navigating: {str(e)}")
+
+@app.post("/browser/{task_id}/refresh")
+async def refresh_browser(task_id: str):
+    """Refresh the browser and return the current state without changing the page.
+    
+    This endpoint is useful for getting the latest screenshot and form elements
+    without performing any navigation or action.
+    """
+    if task_id not in task_states:
+        raise HTTPException(status_code=404, detail="Task not found")
+        
+    if task_states[task_id].get("browser") is None:
+        raise HTTPException(status_code=400, detail="Browser not initialized for this task")
+    
+    try:
+        # Get or create context
+        if task_states[task_id].get("context") is None:
+            browser = task_states[task_id]["browser"]
+            context = await browser.new_context()
+            task_states[task_id]["context"] = context
+        else:
+            context = task_states[task_id]["context"]
+        
+        # Get current page
+        page = await context.get_current_page()
+        
+        # Take a fresh screenshot
+        screenshot_b64 = await context.take_screenshot()
+        
+        # Get form elements
+        form_elements = await page.evaluate("""() => {
+            const elements = Array.from(document.querySelectorAll('input, textarea, select, button'));
+            return elements.map(el => {
+                const rect = el.getBoundingClientRect();
+                return {
+                    id: el.id,
+                    name: el.name,
+                    value: el.value,
+                    tagName: el.tagName,
+                    type: el.type,
+                    placeholder: el.placeholder,
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                    ariaLabel: el.getAttribute('aria-label'),
+                    dataTestId: el.getAttribute('data-testid'),
+                    inputType: el.type,
+                    role: el.getAttribute('role'),
+                    selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : '')
+                };
+            });
+        }""")
+        
+        # Get navigation history state
+        history_state = await page.evaluate("""() => {
+            return {
+                canGoBack: window.history.length > 1 && window.history.state !== null,
+                canGoForward: window.history.state !== null && window.history.state.forward !== null
+            };
+        }""")
+        
+        return {
+            "success": True,
+            "url": page.url,
+            "screenshot": f"data:image/png;base64,{screenshot_b64}",
+            "formElements": form_elements,
+            "historyState": history_state,
+            "message": "Browser refreshed"
+        }
+    except Exception as e:
+        print(f"Error refreshing browser for task {task_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error refreshing browser: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run(

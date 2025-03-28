@@ -5,15 +5,19 @@ import ChatBox from "./components/ChatBox";
 import { Message } from "../types/messages";
 import InteractiveBrowser from "./components/InteractiveBrowser";
 import { FormElement } from "../types/common";
+import { createBrowser } from "./actions/browser";
 
-const sessionId = crypto.randomUUID();
-console.log("Session id is", sessionId)
+// We'll store the session ID but initialize it properly later
+// Remove the random UUID generation
+const uuidPlaceholder = "placeholder";
 
 export default function Home() {
   const [initialMessages, setInitialMessages] = useState<Message[]>([
     { role: "assistant", content: "Hello, I'm the AutonoM3 Agent Building Assistant. How can I help you today?" }
   ])
 
+  // Add state for the browser sessionId
+  const [sessionId, setSessionId] = useState<string>(uuidPlaceholder);
   const [screenshot, setScreenshot] = useState<string>('')
   const [pageTitle, setPageTitle] = useState<string>('')
   const [formElements, setFormElements] = useState<FormElement[]>([])
@@ -22,13 +26,33 @@ export default function Home() {
     canGoForward?: boolean;
   }>({})
   const [url, setUrl] = useState<string>('https://google.com')
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+
+  // Initialize browser session when component mounts
+  useEffect(() => {
+    const initBrowser = async () => {
+      try {
+        setIsLoading(true);
+        // Create a browser and get the session ID from the backend
+        const browserSessionId = await createBrowser();
+        console.log("Created browser session:", browserSessionId);
+        setSessionId(browserSessionId);
+      } catch (error) {
+        console.error("Failed to create browser session:", error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    initBrowser();
+  }, []);
 
   // We're now using the browser-use-service instead of the EventSource
   // This EventSource setup is no longer needed, but we'll keep a simplified
   // version to avoid breaking changes
   useEffect(() => {
-    // In a development environment, we can skip the EventSource connection
-    if (process.env.NODE_ENV === 'development') {
+    // Only set up EventSource if we have a valid session ID
+    if (sessionId === uuidPlaceholder || process.env.NODE_ENV === 'development') {
       return;
     }
 
@@ -87,15 +111,23 @@ export default function Home() {
           />
         </div>
         <div className="md:col-span-3 bg-white rounded-lg shadow-md border">
-          <InteractiveBrowser 
-            url={url}
-            setUrl={setUrl}
-            screenshot={screenshot}
-            pageTitle={pageTitle}
-            formElements={formElements}
-            historyState={historyState}
-            sessionId={sessionId} 
-            updateBrowserState={updateBrowserState} />
+          {isLoading ? (
+            <div className="flex items-center justify-center h-full">
+              <div className="animate-spin h-8 w-8 border-4 border-blue-500 rounded-full border-t-transparent"></div>
+              <p className="ml-3">Creating browser session...</p>
+            </div>
+          ) : (
+            <InteractiveBrowser 
+              url={url}
+              setUrl={setUrl}
+              screenshot={screenshot}
+              pageTitle={pageTitle}
+              formElements={formElements}
+              historyState={historyState}
+              sessionId={sessionId} 
+              updateBrowserState={updateBrowserState} 
+            />
+          )}
         </div>
       </div>
     </div>

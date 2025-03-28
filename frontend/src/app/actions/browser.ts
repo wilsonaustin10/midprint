@@ -11,27 +11,14 @@ export async function navigateTo(url: string, sessionId: string): Promise<Action
   try {
     console.log(`[navigateTo] Attempting to navigate to: ${url}`);
     
-    // Call the browser-use-service API
-    const response = await fetch(`${SERVICE_BASE_URL}${ENDPOINTS.RUN_AGENT}`, {
+    // Call the browser-use-service API directly 
+    const response = await fetch(`${SERVICE_BASE_URL}${ENDPOINTS.BROWSER_NAVIGATE(sessionId)}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        task: `Navigate to ${url}`,
-        max_steps: 1,
-        config: {
-          llm: {
-            provider: 'openai',
-            model: 'gpt-4'
-          }
-        },
-        browser_info: {
-          headless: true
-        },
-        action: BrowserActions.CLICK,
-        url: url,
-        sessionId: sessionId
+        url: url
       }),
     });
 
@@ -41,8 +28,8 @@ export async function navigateTo(url: string, sessionId: string): Promise<Action
 
     const data = await response.json();
     
-    // For testing, skip the task polling and return mock data
-    if (process.env.NODE_ENV === 'development') {
+    // For testing, return mock data if needed
+    if (process.env.NODE_ENV === 'development' && !data) {
       return {
         success: true,
         screenshot: '',
@@ -60,18 +47,15 @@ export async function navigateTo(url: string, sessionId: string): Promise<Action
       };
     }
     
-    // Poll for task completion
-    const taskResult = await pollTaskCompletion(data.task_id);
-    
     return {
-      success: true,
-      screenshot: taskResult.screenshot || '',
-      content: taskResult.content || '',
-      url: taskResult.url || url,
-      title: taskResult.title || '',
-      formElements: taskResult.formElements || [],
-      clickableElements: taskResult.clickableElements || [],
-      historyState: taskResult.historyState || {
+      success: data.success,
+      screenshot: data.screenshot || '',
+      content: data.content || '',
+      url: data.url || url,
+      title: data.title || '',
+      formElements: data.formElements || [],
+      clickableElements: data.clickableElements || [],
+      historyState: data.historyState || {
         canGoBack: false,
         canGoForward: false,
         currentIndex: 0,
@@ -102,7 +86,7 @@ export async function performAction(action: string, selector: string, value: str
     console.debug(`${sessionId}: Performing: ${action}`);
 
     // For testing, return mock data
-    if (process.env.NODE_ENV === 'development') {
+    if (process.env.NODE_ENV === 'development' && !sessionId) {
       return {
         success: true,
         title: 'Page Title',
@@ -120,28 +104,48 @@ export async function performAction(action: string, selector: string, value: str
       };
     }
 
-    // Call the browser-use-service API
-    const response = await fetch(`${SERVICE_BASE_URL}${ENDPOINTS.RUN_AGENT}`, {
+    // Use the refresh endpoint for refresh action
+    if (action === BrowserActions.REFRESH) {
+      const response = await fetch(`${SERVICE_BASE_URL}${ENDPOINTS.BROWSER_REFRESH(sessionId)}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to refresh: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      
+      return {
+        success: data.success,
+        title: data.title || '',
+        screenshot: data.screenshot || '',
+        content: data.content || '',
+        url: data.url || '',
+        formElements: data.formElements || [],
+        clickableElements: data.clickableElements || [],
+        historyState: data.historyState || {
+          canGoBack: false,
+          canGoForward: false,
+          currentIndex: 0,
+          length: 0
+        }
+      };
+    }
+
+    // Call the browser-use-service API directly using the action endpoint
+    const response = await fetch(`${SERVICE_BASE_URL}${ENDPOINTS.BROWSER_ACTION(sessionId)}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        task: `Perform ${action} ${selector ? `on ${selector}` : ''} ${value ? `with value ${value}` : ''}`,
-        max_steps: 1,
-        config: {
-          llm: {
-            provider: 'openai',
-            model: 'gpt-4'
-          }
-        },
-        browser_info: {
-          headless: true
-        },
         action: action,
         selector: selector,
-        value: value,
-        sessionId: sessionId
+        value: value
       }),
     });
 
@@ -151,18 +155,15 @@ export async function performAction(action: string, selector: string, value: str
 
     const data = await response.json();
     
-    // Poll for task completion
-    const taskResult = await pollTaskCompletion(data.task_id);
-    
     return {
-      success: true,
-      title: taskResult.title || '',
-      screenshot: taskResult.screenshot || '',
-      content: taskResult.content || '',
-      url: taskResult.url || '',
-      formElements: taskResult.formElements || [],
-      clickableElements: taskResult.clickableElements || [],
-      historyState: taskResult.historyState || {
+      success: data.success,
+      title: data.title || '',
+      screenshot: data.screenshot || '',
+      content: data.content || '',
+      url: data.url || '',
+      formElements: data.formElements || [],
+      clickableElements: data.clickableElements || [],
+      historyState: data.historyState || {
         canGoBack: false,
         canGoForward: false,
         currentIndex: 0,
@@ -219,4 +220,33 @@ async function pollTaskCompletion(taskId: string, maxAttempts = 30): Promise<Bro
   }
   
   throw new Error('Task polling timed out');
+}
+
+export async function createBrowser(): Promise<string> {
+  try {
+    console.log(`[createBrowser] Creating a new browser session`);
+    
+    // Call the browser-use-service API to create a browser
+    const response = await fetch(`${SERVICE_BASE_URL}${ENDPOINTS.BROWSER_CREATE}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        headless: true
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to create browser: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    
+    // Return the task_id from the response which is our browser session ID
+    return data.task_id;
+  } catch (error) {
+    console.error('Browser creation error:', error);
+    throw error;
+  }
 }

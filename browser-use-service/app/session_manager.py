@@ -32,16 +32,25 @@ class LinkedInSessionManager:
             bool: True if logged in, False otherwise
         """
         try:
+            # Get or create context
+            if not hasattr(browser, '_context') or browser._context is None:
+                context = await browser.new_context()
+            else:
+                context = browser._context
+            
+            # Get the page
+            page = await context.get_current_page()
+            
             # Navigate to Sales Navigator
-            await browser.goto("https://www.linkedin.com/sales")
+            await page.goto("https://www.linkedin.com/sales")
             
             # Check for login page redirect
-            current_url = browser.current_url
+            current_url = page.url
             if "login" in current_url.lower():
                 return False
                 
             # Try to find a common authenticated element
-            profile_button = await browser.wait_for_selector('[data-control-name="nav_profile_dropdown"]', timeout=5000)
+            profile_button = await page.wait_for_selector('[data-control-name="nav_profile_dropdown"]', timeout=5000)
             return profile_button is not None
             
         except Exception as e:
@@ -59,8 +68,17 @@ class LinkedInSessionManager:
             bool: True if successful, False otherwise
         """
         try:
+            # Get or create context
+            if not hasattr(browser, '_context') or browser._context is None:
+                context = await browser.new_context()
+            else:
+                context = browser._context
+            
+            # Get the underlying playwright context
+            playwright_context = context.context
+            
             # Get cookies from browser
-            cookies = await browser.context.cookies()
+            cookies = await playwright_context.cookies()
             
             # Save cookies
             with open(self.cookie_file, 'w') as f:
@@ -108,12 +126,21 @@ class LinkedInSessionManager:
                 if not session_data.get("is_valid", False):
                     return False
             
+            # Get or create context
+            if not hasattr(browser, '_context') or browser._context is None:
+                context = await browser.new_context()
+            else:
+                context = browser._context
+            
+            # Get the underlying playwright context
+            playwright_context = context.context
+            
             # Load cookies
             with open(self.cookie_file, 'r') as f:
                 cookies = json.load(f)
                 
             # Set cookies in browser
-            await browser.context.add_cookies(cookies)
+            await playwright_context.add_cookies(cookies)
             
             # Verify login status
             return await self.is_logged_in(browser)
@@ -155,13 +182,22 @@ class LinkedInSessionManager:
             if await self.load_session(browser):
                 return True
                 
+            # Get or create context
+            if not hasattr(browser, '_context') or browser._context is None:
+                context = await browser.new_context()
+            else:
+                context = browser._context
+            
+            # Get the page
+            page = await context.get_current_page()
+            
             # Navigate to login page
-            await browser.goto("https://www.linkedin.com/login")
+            await page.goto("https://www.linkedin.com/login")
             
             if credentials:
                 # Automated login if credentials provided
-                username_input = await browser.wait_for_selector('#username')
-                password_input = await browser.wait_for_selector('#password')
+                username_input = await page.wait_for_selector('#username')
+                password_input = await page.wait_for_selector('#password')
                 
                 if not username_input or not password_input:
                     return False
@@ -170,7 +206,7 @@ class LinkedInSessionManager:
                 await password_input.fill(credentials["password"])
                 
                 # Click login button
-                login_button = await browser.wait_for_selector('button[type="submit"]')
+                login_button = await page.wait_for_selector('button[type="submit"]')
                 if login_button:
                     await login_button.click()
             else:
