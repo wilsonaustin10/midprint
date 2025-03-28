@@ -44,9 +44,21 @@ The service will be available at `http://localhost:8003`
 
 - `GET /health` - Health check endpoint
 - `POST /run-agent` - Execute a browser automation task
+  - Requires nested dictionary configuration (`config["llm"]`, `browser_info["headless"]`, etc.)
+- `POST /browser/create` - Create a new browser instance
+- `POST /browser/{task_id}/navigate` - Navigate to a URL
+- `POST /browser/{task_id}/action` - Perform an action (click, fill, etc.) 
+- `GET /browser/{task_id}/form_elements` - Get form elements from the current page
+- `GET /browser/{task_id}/screenshot` - Get a screenshot of the current page
 
 ## Development
 
 - Run tests: `pytest tests/`
 - API documentation available at: `http://localhost:8003/docs`
 - ReDoc documentation available at: `http://localhost:8003/redoc` 
+
+## Troubleshooting
+
+- If you encounter a dictionary access error with `run-agent`, ensure you're using dictionary notation:
+  - Example: `{"config": {"llm": {"provider": "openai"}}, "browser_info": {"headless": true}}`
+  - Access in code should use dictionary notation (e.g., `config["llm"]` not `config.llm`) 

@@ -63,9 +63,9 @@ app.add_middleware(
 class TaskRequest(BaseModel):
     task: str
     max_steps: Optional[int] = 50
-    config: Optional[Dict[str, Any]] = {}
-    browser_info: Dict[str, Any]  # Information about the Playwright browser instance
-    credentials: Optional[Dict[str, str]] = None  # Optional LinkedIn credentials
+    config: Optional[Dict[str, Any]] = {}  # Use dictionary access (config["llm"]) not attribute access (config.llm)
+    browser_info: Dict[str, Any]  # Use dictionary access (browser_info["headless"]) not attribute access (browser_info.headless)
+    credentials: Optional[Dict[str, str]] = None  # Use dictionary access (credentials["username"]) not attribute access (credentials.username)
 
 class TaskResponse(BaseModel):
     task_id: str
@@ -212,6 +212,20 @@ async def create_browser(request: BrowserCreateRequest):
 
 @app.post("/run-agent")
 async def run_agent(request: Request, task_request: TaskRequest, background_tasks: BackgroundTasks):
+    """Execute a browser automation task.
+    
+    Note on request structure:
+    - The config, browser_info, and credentials parameters are dictionaries and must be accessed using
+      dictionary notation in the code (e.g., config["llm"], not config.llm).
+    - Example request body:
+      {
+        "task": "Navigate to example.com",
+        "max_steps": 10,
+        "config": {"llm": {"provider": "openai", "model": "gpt-4"}},
+        "browser_info": {"headless": true},
+        "credentials": {"username": "user@example.com", "password": "password"}
+      }
+    """
     task_id = f"task_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     print(f"Initializing task {task_id} with config: {task_request.config}")
     print(f"TEST_MODE env var: {os.getenv('TEST_MODE')}")
@@ -249,11 +263,11 @@ async def run_agent(request: Request, task_request: TaskRequest, background_task
                 }
             
         # Validate required configuration
-        if not task_request.config or not task_request.config.llm:
+        if not task_request.config or not task_request.config['llm']:
             raise ValueError("Missing LLM configuration")
 
         # Initialize browser using the create_browser endpoint
-        browser_response = await create_browser(BrowserCreateRequest(headless=task_request.browser_info.headless))
+        browser_response = await create_browser(BrowserCreateRequest(headless=task_request.browser_info["headless"]))
         browser_task_id = browser_response["task_id"]
         
         # Use the browser from the task state
@@ -270,7 +284,7 @@ async def run_agent(request: Request, task_request: TaskRequest, background_task
         # Only attempt login if credentials are provided
         if task_request.credentials and task_request.credentials.get("username") and task_request.credentials.get("password"):
             # Prepare credentials
-            credentials = {"username": task_request.credentials.username, "password": task_request.credentials.password}
+            credentials = {"username": task_request.credentials["username"], "password": task_request.credentials["password"]}
             
             # Attempt login
             login_success = await session_manager.handle_login(browser, credentials)
@@ -367,7 +381,23 @@ async def get_screenshot(task_id: str):
 
 @app.get("/browser/{task_id}/form_elements")
 async def get_form_elements(task_id: str):
-    """Get the form elements from the current page."""
+    """Get the form elements from the current page.
+    
+    This endpoint retrieves all form elements (inputs, buttons, textareas, selects) from the 
+    current browser page for the specified task ID. The endpoint returns detailed information 
+    about each element, including:
+    
+    - Element attributes (id, name, value, type, etc.)
+    - Element position and size (x, y, width, height)
+    - ARIA attributes
+    - CSS selectors for targeting elements
+    
+    The URL format is `/browser/{task_id}/form_elements`, where `{task_id}` is the ID of an existing
+    browser instance created with the `/browser/create` endpoint.
+    
+    Returns a JSON object with a "form_elements" array containing all form elements found on the page.
+    If no elements are found, returns an empty array.
+    """
     if task_id not in task_states:
         raise HTTPException(status_code=404, detail="Task not found")
         
