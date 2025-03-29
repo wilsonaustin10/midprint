@@ -15,6 +15,7 @@ patch_browser()  # Apply the patch
 
 from .linkedin_actions import LinkedInActions
 from .session_manager import LinkedInSessionManager
+from .agent_handler import AgentHandler
 import asyncio
 from datetime import datetime
 import json
@@ -130,24 +131,29 @@ async def execute_agent_task(task_id: str, task_request: TaskRequest, browser: B
                 return True
             save_session = mock_save_session
             
-        # Run agent steps
-        for step in range(task_request.max_steps):
-            task_states[task_id]["current_step"] = step + 1
-            
-            # Save session after each successful step
-            await save_session(browser)
-            
-            # Update task history
-            task_states[task_id]["history"].append({
-                "step": step + 1,
-                "action": f"Completed step {step + 1}",
-                "timestamp": datetime.now().isoformat()
-            })
-            
-            # Add delay between steps
-            await asyncio.sleep(1)
+        # Initialize the agent handler
+        agent_handler = AgentHandler(browser)
         
-        task_states[task_id]["status"] = "completed"
+        # Run the agent with the given task and config
+        result = await agent_handler.run_agent(
+            task=task_request.task,
+            config=task_request.config,
+            max_steps=task_request.max_steps
+        )
+        
+        # Update task state with agent execution results
+        task_states[task_id]["history"] = result.get("history", [])
+        task_states[task_id]["current_step"] = result.get("steps_completed", 0)
+        
+        if result.get("success", False):
+            task_states[task_id]["status"] = "completed"
+            task_states[task_id]["result"] = result.get("result", "Task completed successfully")
+        else:
+            task_states[task_id]["status"] = "failed"
+            task_states[task_id]["error"] = result.get("error", "Unknown error occurred")
+        
+        # Save session after completing the task
+        await save_session(browser)
         
     except Exception as e:
         task_states[task_id]["status"] = "failed"

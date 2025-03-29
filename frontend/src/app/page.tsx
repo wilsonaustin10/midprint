@@ -13,7 +13,7 @@ const uuidPlaceholder = "placeholder";
 
 export default function Home() {
   const [initialMessages, setInitialMessages] = useState<Message[]>([
-    { role: "assistant", content: "Hello, I'm the AutonoM3 Agent Building Assistant. How can I help you today?" }
+    { role: "assistant", content: "Hello, I'm the AutonoM3 Agent Building Assistant. I can help with web automation tasks! Try any of these:\n\n- Use 'Chat with AI' for regular conversation\n- Enter a URL to navigate directly\n- Use 'Browser Action' with natural language like 'find the best deal on AirPods Pro'" }
   ])
 
   // Add state for the browser sessionId

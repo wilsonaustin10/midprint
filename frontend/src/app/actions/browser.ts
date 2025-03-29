@@ -5,6 +5,8 @@ import { PageInfo } from '@/types/prompts';
 
 export type ActionResult = PageInfo & {
   success: boolean;
+  agentResult?: any;
+  error?: string;
 }
 
 export async function navigateTo(url: string, sessionId: string): Promise<ActionResult> {
@@ -248,5 +250,94 @@ export async function createBrowser(): Promise<string> {
   } catch (error) {
     console.error('Browser creation error:', error);
     throw error;
+  }
+}
+
+export async function runAgentTask(task: string, sessionId: string): Promise<ActionResult> {
+  try {
+    console.log(`[runAgentTask] Starting task: ${task}`);
+    
+    // Call the browser-use-service API to run an agent
+    const response = await fetch(`${SERVICE_BASE_URL}${ENDPOINTS.RUN_AGENT}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        task: task,
+        max_steps: 30,
+        config: {
+          llm: {
+            provider: 'openai',
+            model: 'gpt-4'
+          }
+        },
+        browser_info: {
+          headless: true
+        }
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to start agent task: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    
+    // The response only provides a task_id to track the progress
+    const taskId = data.task_id;
+    
+    // Poll for task completion
+    console.log(`[runAgentTask] Polling for task ${taskId} completion`);
+    const result = await pollTaskCompletion(taskId);
+    
+    // After task completion, refresh the browser state
+    const refreshResponse = await fetch(`${SERVICE_BASE_URL}${ENDPOINTS.BROWSER_REFRESH(sessionId)}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      }
+    });
+    
+    if (!refreshResponse.ok) {
+      throw new Error(`Failed to refresh browser after task: ${refreshResponse.statusText}`);
+    }
+    
+    const refreshData = await refreshResponse.json();
+    
+    // Return the combined result
+    return {
+      success: true,
+      title: refreshData.title || '',
+      screenshot: refreshData.screenshot || '',
+      content: refreshData.content || '',
+      url: refreshData.url || '',
+      formElements: refreshData.formElements || [],
+      clickableElements: refreshData.clickableElements || [],
+      historyState: refreshData.historyState || {
+        canGoBack: false,
+        canGoForward: false,
+        currentIndex: 0,
+        length: 0
+      },
+      agentResult: result // Include the agent task result
+    };
+  } catch (error) {
+    console.error('Agent task error:', error);
+    return {
+      success: false,
+      title: "",
+      content: "",
+      url: "",
+      formElements: [],
+      clickableElements: [],
+      historyState: {
+        canGoBack: false,
+        canGoForward: false,
+        currentIndex: 0,
+        length: 0
+      },
+      error: error instanceof Error ? error.message : 'Unknown error'
+    };
   }
 }
