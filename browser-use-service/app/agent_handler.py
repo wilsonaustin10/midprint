@@ -9,6 +9,8 @@ import asyncio
 import os
 import json
 from datetime import datetime
+from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 
 class AgentHandler:
     """Handler for browser-use Agent integration."""
@@ -47,12 +49,34 @@ class AgentHandler:
         # Initialize Controller for custom actions if needed
         self.controller = Controller()
         
+        # Initialize the correct chat model using langchain based on provider
+        if provider == 'openai':
+            llm = ChatOpenAI(
+                model=model,
+                temperature=0,
+                max_tokens=llm_config.get('max_tokens', 1000),
+                timeout=None,
+                max_retries=2,
+                api_key=os.getenv("OPENAI_API_KEY")
+            )
+        elif provider == 'anthropic':
+            llm = ChatAnthropic(
+                model=model,
+                temperature=0,
+                max_tokens=llm_config.get('max_tokens', 1000),
+                timeout=None,
+                max_retries=2,
+                api_key=os.getenv("ANTHROPIC_API_KEY")
+            )
+        else:
+            raise ValueError(f"Unsupported LLM provider: {provider}")
+        
         # Initialize Agent with task, browser, and controller
         self.agent = Agent(
             task=task,
             browser=self.browser,
             controller=self.controller,
-            llm={"provider": provider, "model": model},
+            llm=llm,
             # Any additional configurations from browser-use can go here
         )
         
@@ -71,9 +95,12 @@ class AgentHandler:
             Dict with execution results and history
         """
         self.history = []
+        print(f"[AgentHandler] run_agent called for task: {task}") # LOG 1
         
         # Initialize the agent
+        print("[AgentHandler] Initializing agent...") # LOG 2a
         await self.initialize_agent(task, config, max_steps)
+        print("[AgentHandler] Agent initialized.") # LOG 2b
         
         # Create a listener to capture agent history
         def history_listener(event_type, data):
@@ -90,7 +117,9 @@ class AgentHandler:
         
         # Run the agent
         try:
+            print("[AgentHandler] Running agent...") # LOG 3
             result = await self.agent.run(max_steps=max_steps)
+            print(f"[AgentHandler] Agent run finished. Result: {result}") # LOG 4
             
             return {
                 "success": True,
@@ -100,6 +129,7 @@ class AgentHandler:
                 "task": task
             }
         except Exception as e:
+            print(f"[AgentHandler] Exception during agent run: {str(e)}") # LOG 5
             return {
                 "success": False,
                 "error": str(e),

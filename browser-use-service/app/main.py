@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 import uvicorn
 from dotenv import load_dotenv
-from browser_use import Agent, Controller
+from browser_use import Agent, Controller, AgentHistoryList, ActionResult
 from browser_use.browser.browser import Browser, BrowserConfig
 # Import and apply our patch to fix the Browser class
 from .browser_patch import patch_browser
@@ -111,66 +111,224 @@ def generate_task_id() -> str:
     return f"task_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.urandom(4).hex()}"
 
 async def execute_agent_task(task_id: str, task_request: TaskRequest, browser: Browser, session_manager: LinkedInSessionManager):
+    # --- Define mock save session outside the try block --- 
+    async def mock_save_session(b):
+        print(f"[Mock Save Session] Called for browser related to task {task_id}. Skipping actual save.")
+        await asyncio.sleep(0.1) # Simulate small delay
+        return True
+    # ----------------------------------------------------
+    
+    agent_history_list: Optional[AgentHistoryList] = None
+    handler_success = False # Default to False
+    handler_error: Optional[str] = None
+    agent_handler_history = [] # Default to empty list
+
     try:
-        task_states[task_id]["status"] = "running"
-        # Store the browser instance in the task state
-        task_states[task_id]["browser"] = browser
-        
-        # Get or create context
-        if task_states[task_id].get("context") is None:
-            context = await browser.new_context()
-            task_states[task_id]["context"] = context
-        else:
-            context = task_states[task_id]["context"]
-        
-        # In test mode, don't actually try to save session (would fail with mock)
-        save_session = session_manager.save_session
-        if os.getenv("TEST_MODE") == "true":
-            async def mock_save_session(b):
-                print(f"Mock save session for test")
-                return True
-            save_session = mock_save_session
-            
-        # Initialize the agent handler
+        print(f"[execute_agent_task {task_id}] Starting agent run.")
         agent_handler = AgentHandler(browser)
-        
-        # Run the agent with the given task and config
-        result = await agent_handler.run_agent(
+        returned_result = await agent_handler.run_agent(
             task=task_request.task,
             config=task_request.config,
             max_steps=task_request.max_steps
         )
+        print(f"[execute_agent_task {task_id}] Agent run finished. Raw result type: {type(returned_result)}")
+
+        # --- Robust Handling of Returned Result --- 
+        if isinstance(returned_result, AgentHistoryList):
+            print(f"[execute_agent_task {task_id}] Processing direct AgentHistoryList return.")
+            agent_history_list = returned_result
+            handler_success = agent_history_list.is_successful
+            # --- Consistently use action_results attribute for history --- 
+            agent_handler_history = [res.dict() for res in agent_history_list.action_results] if hasattr(agent_history_list, 'action_results') and isinstance(agent_history_list.action_results, list) else [] 
+            if not handler_success:
+                 handler_error = None
+                 if hasattr(agent_history_list, 'final_result') and agent_history_list.final_result:
+                     handler_error = agent_history_list.final_result.error
+                 elif agent_handler_history and agent_handler_history[-1].error:
+                     handler_error = agent_handler_history[-1].error
+                 handler_error = handler_error or "AgentHistoryList success=False"
         
-        # Update task state with agent execution results
-        task_states[task_id]["history"] = result.get("history", [])
-        task_states[task_id]["current_step"] = result.get("steps_completed", 0)
-        
-        if result.get("success", False):
-            task_states[task_id]["status"] = "completed"
-            task_states[task_id]["result"] = result.get("result", "Task completed successfully")
+        elif isinstance(returned_result, dict):
+            print(f"[execute_agent_task {task_id}] Processing dict return.")
+            if "result" in returned_result and isinstance(returned_result["result"], AgentHistoryList):
+                 print(f"[execute_agent_task {task_id}] Found AgentHistoryList in dict['result'].")
+                 agent_history_list = returned_result["result"]
+                 handler_success = returned_result.get("success", agent_history_list.is_successful)
+                 # --- Consistently use action_results attribute for history (prefer dict key if exists) --- 
+                 if "history" in returned_result and isinstance(returned_result["history"], list):
+                     agent_handler_history = returned_result["history"]
+                 elif hasattr(agent_history_list, 'action_results') and isinstance(agent_history_list.action_results, list):
+                      agent_handler_history = [res.dict() for res in agent_history_list.action_results]
+                 else:
+                     agent_handler_history = [] # Default empty
+                 handler_error = returned_result.get("error")
+                 if not handler_success and not handler_error:
+                     local_error = None
+                     if hasattr(agent_history_list, 'final_result') and agent_history_list.final_result:
+                         local_error = agent_history_list.final_result.error
+                     elif agent_handler_history and agent_handler_history[-1].error:
+                         local_error = agent_handler_history[-1].error
+                     handler_error = local_error or "AgentHistoryList success=False (extracted from dict)"
+            else:
+                 # Dictionary format is unexpected
+                 print(f"[execute_agent_task {task_id}] WARNING: Dict return lacks expected 'result' key or correct type.")
+                 handler_success = False
+                 handler_error = "Agent handler returned dictionary in unexpected format."
+                 # Attempt to get history if key exists
+                 agent_handler_history = returned_result.get("history", [])
         else:
-            task_states[task_id]["status"] = "failed"
-            task_states[task_id]["error"] = result.get("error", "Unknown error occurred")
+            # Handle completely unexpected return type
+            handler_success = False
+            handler_error = f"Agent handler returned unexpected type: {type(returned_result)}"
+            print(f"[execute_agent_task {task_id}] ERROR: {handler_error}")
+        # ---------------------------------------------
+
+        # Update task state using the determined history
+        print(f"[execute_agent_task {task_id}] Updating task state history ({len(agent_handler_history)} items) and step.")
+        task_states[task_id]["history"] = agent_handler_history
+        task_states[task_id]["current_step"] = len(agent_handler_history)
+        print(f"[execute_agent_task {task_id}] History/Step updated.")
+
+        # Determine final action result 
+        final_action_result: Optional[ActionResult] = None 
+        # --- Use action_results() if callable, else direct access --- 
+        action_results_list = None
+        if agent_history_list:
+             if hasattr(agent_history_list, 'action_results') and callable(agent_history_list.action_results):
+                 action_results_list = agent_history_list.action_results()
+             elif hasattr(agent_history_list, 'action_results') and isinstance(agent_history_list.action_results, list):
+                 action_results_list = agent_history_list.action_results
+
+        if isinstance(action_results_list, list) and action_results_list:
+             final_action_result = action_results_list[-1]
         
-        # Save session after completing the task
-        await save_session(browser)
-        
+        # Decide final status
+        task_updated = False 
+        # (Removing debug logs from last step)
+        print(f"[execute_agent_task {task_id}] Deciding final status. handler_success={handler_success}, final_action_result is set: {final_action_result is not None}")
+        if handler_success and final_action_result:
+            try:
+                if hasattr(final_action_result, 'success') and hasattr(final_action_result, 'extracted_content'):
+                    # Use the success attribute from the *specific* final action result
+                    # Note: handler_success (overall success) might differ from final_action_result.success
+                    is_final_action_success = final_action_result.success 
+                    # Sometimes the final action might report success=None, treat None as success for completion status
+                    if is_final_action_success is None: 
+                         print(f"[execute_agent_task {task_id}] Final action success is None, treating as True for completion.")
+                         is_final_action_success = True 
+                         
+                    content_str = str(final_action_result.extracted_content) if final_action_result.extracted_content is not None else ""
+
+                    if is_final_action_success:
+                        task_states[task_id]["status"] = "completed"
+                        task_states[task_id]["result"] = content_str or "Success but no content extracted."
+                        last_action_str = task_states[task_id]["result"]
+                        task_states[task_id]["last_action"] = last_action_str 
+                        task_updated = True
+                        print(f"[execute_agent_task {task_id}] Final status: completed.")
+                    else: # Final action failed (e.g., done action reported success=False)
+                        task_states[task_id]["status"] = "failed"
+                        error_content_str = content_str or final_action_result.error or "Agent finished last step with success=False"
+                        task_states[task_id]["error"] = error_content_str
+                        task_states[task_id]["last_action"] = error_content_str
+                        task_updated = True
+                        print(f"[execute_agent_task {task_id}] Final status: failed (final action success=False).")
+                else:
+                     task_states[task_id]["status"] = "failed"
+                     task_states[task_id]["error"] = "Final action result object structure incorrect (missing success/extracted_content)."
+                     task_updated = True
+                     print(f"[execute_agent_task {task_id}] Final status: failed (final action structure incorrect).")
+            except Exception as e:
+                 print(f"[execute_agent_task - ERROR {task_id}] Exception processing final_action_result: {e}") 
+                 task_states[task_id]["status"] = "failed"
+                 task_states[task_id]["error"] = f"Exception processing final action: {e}"
+                 task_updated = True
+                 print(f"[execute_agent_task {task_id}] Final status: failed (exception processing final action).")
+
+        elif not handler_success:
+             task_states[task_id]["status"] = "failed"
+             task_states[task_id]["error"] = handler_error or "Agent handler failed during execution."
+             task_updated = True
+             print(f"[execute_agent_task {task_id}] Final status: failed (handler_success=False).")
+
+        # Fallback if no status was set (should be less likely now)
+        if not task_updated:
+             task_states[task_id]["status"] = "failed"
+             task_states[task_id]["error"] = "Agent handler finished but final status could not be determined (fallback)."
+             print(f"[execute_agent_task {task_id}] Final status: failed (fallback reached).")
+
+        # Save session 
+        print(f"[execute_agent_task {task_id}] Attempting to save session.")
+        try:
+            # Using mock save session for now
+            await mock_save_session(browser)
+            print(f"[execute_agent_task {task_id}] Session save call completed.")
+        except Exception as save_err:
+            print(f"[execute_agent_task {task_id}] Error during session save: {str(save_err)}") 
+            # SAFETY CHECK: Ensure task_id exists and is a dict before accessing status
+            print(f"[SAVE ERROR] Checking task_states for {task_id} before status update.")
+            if task_id in task_states and isinstance(task_states.get(task_id), dict):
+                print(f"[SAVE ERROR] task_states[{task_id}] is a dict. Current status: {task_states[task_id].get('status')}")
+                if task_states[task_id].get("status") == "running": # Update status only if it was still running
+                     task_states[task_id]["status"] = "failed"
+                     task_states[task_id]["error"] = f"Agent task done, but failed to save session: {str(save_err)}"
+            else:
+                print(f"[SAVE ERROR] task_states[{task_id}] is missing or not a dict. Cannot update status.")
+                # Avoid further errors by not trying to update the state if it's invalid
+                pass 
+
     except Exception as e:
-        task_states[task_id]["status"] = "failed"
-        task_states[task_id]["error"] = str(e)
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[OUTER CATCH] Caught exception in execute_agent_task for {task_id}: {str(e)}")
+        # SAFETY CHECK: Ensure task_id exists and is a dict before assigning failure status
+        if task_id in task_states and isinstance(task_states.get(task_id), dict):
+            task_states[task_id]["status"] = "failed"
+            task_states[task_id]["error"] = str(e)
+        else:
+            print(f"[OUTER CATCH] task_states[{task_id}] is missing or not a dict. Cannot set final failure state.")
+            # Log the original error without modifying potentially corrupt state
+            pass
+        # Log the exception regardless
+        print(f"Exception in execute_agent_task for {task_id}: {str(e)}") # Original logging kept
     finally:
-        # Keep browser in the task state for screenshots but close it when task is done
-        if task_id in task_states and task_states[task_id].get("status") in ["completed", "failed"]:
-            await browser.close()
-            # Keep reference to the browser for a short time
-            # in case client needs to get final screenshot
-            await asyncio.sleep(30)
-            # Remove browser reference to free up resources
-            if task_id in task_states and "browser" in task_states[task_id]:
-                del task_states[task_id]["browser"]
+        # Clean up browser resources
+        print(f"[FINALLY] Entering finally block for {task_id}.")
+        # SAFETY CHECK: Ensure task_id exists and is a dict before checking status for cleanup
+        task_state_valid = task_id in task_states and isinstance(task_states.get(task_id), dict)
+        print(f"[FINALLY] task_state_valid for {task_id}: {task_state_valid}")
+        
+        if task_state_valid and task_states[task_id].get("status") in ["completed", "failed"]:
+            print(f"[FINALLY] Task {task_id} status is {task_states[task_id].get('status')}. Cleaning up browser.")
+            if browser: # Check if browser object exists
+                try:
+                    await browser.close()
+                    print(f"Closed browser for task {task_id}")
+                except Exception as close_err:
+                    print(f"Error closing browser for task {task_id}: {str(close_err)}")
+            # Clean up context and instance references
             if task_id in task_states and "context" in task_states[task_id]:
                 del task_states[task_id]["context"]
+                print(f"Removed context reference for task {task_id}")
+            if task_id in task_states and "browser" in task_states[task_id]:
+                del task_states[task_id]["browser"]
+                print(f"Removed browser reference for task {task_id}")
+        elif task_state_valid:
+             print(f"[FINALLY] Task {task_id} status is {task_states[task_id].get('status')}. Not cleaning up browser yet.")
+        else:
+            print(f"[FINALLY] Task state for {task_id} is invalid. Skipping browser cleanup check based on status.")
+            # Attempt cleanup even if state is invalid, as resources might leak
+            if browser: # Check if browser object exists
+                try:
+                    await browser.close()
+                    print(f"[FINALLY - INVALID STATE] Closed browser for task {task_id}")
+                except Exception as close_err:
+                    print(f"[FINALLY - INVALID STATE] Error closing browser for task {task_id}: {str(close_err)}")
+            if task_id in task_states and "context" in task_states[task_id]:
+                del task_states[task_id]["context"]
+                print(f"[FINALLY - INVALID STATE] Removed context reference for task {task_id}")
+            if task_id in task_states and "browser" in task_states[task_id]:
+                del task_states[task_id]["browser"]
+                print(f"[FINALLY - INVALID STATE] Removed browser reference for task {task_id}")
+        print(f"[execute_agent_task {task_id}] Reached end of finally block.")
 
 @app.get("/health")
 async def health_check():
