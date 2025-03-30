@@ -80,112 +80,6 @@ export default function InteractiveBrowser({ sessionId, url, screenshot, formEle
         };
     }, [sessionId, url]);
 
-    // --- NEW useEffect for SSE Connection ---
-    useEffect(() => {
-        // Don't connect if sessionId is missing
-        if (!sessionId) {
-            console.log("SSE: No sessionId, skipping connection.");
-            return;
-        }
-
-        // Ensure previous connection is closed
-        if (eventSourceRef.current) {
-            console.log("SSE: Closing previous connection.");
-            eventSourceRef.current.close();
-            eventSourceRef.current = null;
-        }
-
-        // --- IMPORTANT: Adjust the URL to your actual SSE endpoint --- 
-        // Verify this URL, it should match the one defined in your backend (e.g., main.py)
-        const sseUrl = `http://localhost:8003/task/${sessionId}/stream`; // <<< Use absolute URL with correct port and path
-        console.log(`SSE: Connecting to ${sseUrl}`);
-        
-        const newEventSource = new EventSource(sseUrl);
-        eventSourceRef.current = newEventSource;
-
-        newEventSource.onopen = () => {
-            console.log("SSE: Connection opened");
-            addLog("Live update connection established.");
-        };
-
-        // Listener for browser_update events
-        newEventSource.addEventListener('browser_update', (event) => {
-            console.log("SSE: Received browser_update event");
-            try {
-                const eventData = JSON.parse(event.data);
-                const browserState = eventData.data; 
-
-                if (browserState) {
-                    console.log("SSE: Parsed browser state:", browserState);
-                     updateBrowserState({ 
-                        success: true, 
-                        url: browserState.url,
-                        title: browserState.pageTitle, 
-                        screenshot: browserState.screenshot,
-                        formElements: browserState.formElements,
-                        historyState: browserState.historyState,
-                        // Provide default values for required fields missing from SSE payload
-                        content: '', // Default to empty string
-                        clickableElements: [], // Default to empty array
-                     });
-                     addLog(`Live update received (Step ${browserState.current_step || 'N/A'})`);
-                } else {
-                    console.warn("SSE: Received browser_update event with invalid data structure:", eventData);
-                }
-            } catch (error) {
-                console.error("SSE: Error parsing browser_update event data:", error);
-                addLog("Error processing live update.");
-            }
-        });
-
-        // Listener for log events (optional, if backend still sends them)
-        newEventSource.addEventListener('log', (event) => {
-             console.log("SSE: Received log event", event.data);
-             try {
-                 const logData = JSON.parse(event.data);
-                 if (logData.message) {
-                     addLog(`[Agent Log] ${logData.message}`);
-                 }
-             } catch (error) {
-                 console.error("SSE: Error parsing log event data:", error);
-             }
-        });
-        
-        // Listener for status events (optional, if backend still sends them)
-         newEventSource.addEventListener('status', (event) => {
-             console.log("SSE: Received status event", event.data);
-             try {
-                 const statusData = JSON.parse(event.data);
-                 if (statusData.message) {
-                     addLog(`[Agent Status] ${statusData.status}: ${statusData.message}`);
-                     // Maybe set loading state based on status?
-                     // setIsLoading(statusData.status === 'running'); 
-                 } 
-             } catch (error) {
-                 console.error("SSE: Error parsing status event data:", error);
-             }
-        });
-
-
-        newEventSource.onerror = (error) => {
-            console.error("SSE: Connection error:", error);
-            addLog("Live update connection error. Attempting to reconnect...");
-            // EventSource automatically attempts reconnection on errors, but close explicitly here.
-            newEventSource.close(); 
-            eventSourceRef.current = null;
-        };
-
-        // Cleanup function: close connection when component unmounts or sessionId changes
-        return () => {
-            if (newEventSource) {
-                console.log("SSE: Closing connection due to cleanup.");
-                newEventSource.close();
-                eventSourceRef.current = null;
-            }
-        };
-
-    }, [sessionId, addLog, updateBrowserState]); // Dependencies: Re-run if sessionId changes
-
     const handleNavigation = async (targetUrl: string) => {
         setIsLoading(true);
         try {
@@ -601,13 +495,11 @@ export default function InteractiveBrowser({ sessionId, url, screenshot, formEle
                 )}
 
                 {screenshot ? (
-                    <Image
+                    <img
                         src={screenshot}
                         alt="Browser content"
-                        className="w-full"
+                        className="w-full h-auto"
                         onClick={handleScreenshotClick}
-                        width={1000}
-                        height={1000}
                     />
                 ) : (
                     <div className="flex items-center justify-center h-full">

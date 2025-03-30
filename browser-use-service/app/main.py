@@ -307,7 +307,12 @@ async def execute_agent_task(task_id: str, task_request: TaskRequest, browser: B
             # Store final_action_result or final_answer? Let's stick to action result for now.
             task_states[task_id]["last_action"] = str(final_action_result) if final_action_result else "N/A"
             print(f"[Agent {task_id}] Updated final task state: Status='{final_status}', History Length={len(action_results_list)}, Final Result='{final_action_result}'")
-            await push_sse_update(task_id, {"status": final_status, "history": action_results_list, "result": str(final_action_result) if final_action_result else None})
+            await push_sse_update(task_id, {
+                 "type": "completed",
+                 "status": final_status, 
+                 "history": action_results_list, 
+                 "result": str(final_action_result) if final_action_result else None
+            })
         else:
              print(f"[WARN {task_id}] Task state not found for final update.")
 
@@ -341,21 +346,27 @@ async def execute_agent_task(task_id: str, task_request: TaskRequest, browser: B
         print(f"[FINALLY] Entering finally block for {task_id}.")
         task_state_valid = task_id in task_states
         print(f"[FINALLY] task_state_valid for {task_id}: {task_state_valid}")
-        
+
+        # --- ADDED: Set AgentHandler inactive before cleanup ---
+        if agent_handler:
+             agent_handler.is_active = False
+             print(f"[FINALLY] Marked AgentHandler inactive for task {task_id}.")
+        # --- END ADDED ---
+
         # --- Send Final SSE Update (if not already sent by normal flow or outer catch) ---
         final_status_sent = False
-        if task_state_valid: 
+        if task_state_valid:
              state_at_finally = task_states[task_id].get("status")
              if state_at_finally == "completed" or state_at_finally == "failed":
                  final_status_sent = True # Assume status already set and pushed
-        
+
         if task_state_valid and not final_status_sent:
             print(f"[FINALLY] Task {task_id} status was {task_states[task_id].get('status')}, setting to failed and pushing.")
             task_states[task_id]["status"] = "failed"
             task_states[task_id]["error"] = task_states[task_id].get("error", "Task failed in finally block.")
             await push_sse_update(task_id, {
-                 "type": "failed", 
-                 "status": "failed", 
+                 "type": "failed",
+                 "status": "failed",
                  "error": task_states[task_id]["error"]
             })
             final_status_sent = True # Mark as sent
@@ -659,8 +670,6 @@ async def sse_event_generator(task_id: str, queue: asyncio.Queue, request: Reque
                     "event": "error",
                     "data": error_data_string
                 }
-                # Break on error processing queue item
-                break
 
     except asyncio.CancelledError:
          print(f"[SSE {task_id}] Generator cancelled (client likely disconnected).")

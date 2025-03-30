@@ -53,57 +53,33 @@ export default function Home() {
     initBrowser();
   }, []);
 
-  // We're now using the browser-use-service instead of the EventSource
-  // This EventSource setup is no longer needed, but we'll keep a simplified
-  // version to avoid breaking changes
-  useEffect(() => {
-    // Only set up EventSource if we have a valid session ID
-    if (sessionId === uuidPlaceholder || process.env.NODE_ENV === 'development') {
-      return;
-    }
-
-    const eventSource = new EventSource(`/api/browser-service/events?sessionId=${sessionId}`)
-
-    eventSource.onmessage = (event) => {
-      try {
-        const {pageInfo} = JSON.parse(event.data);
-        updateBrowserState(pageInfo)
-      } catch (error) {
-        console.error("Error parsing event data:", error);
-      }
-    }
-
-    eventSource.onerror = (error) => {
-      console.error("Error fetching browser events:", error)
-      eventSource.close()
-    }
-
-    return () => {
-      eventSource.close();
-    }
-    
-  }, [sessionId])
-
   // Add this function to update browser state from API responses
   // Wrap in useCallback to ensure a stable reference is passed down
   const updateBrowserState = useCallback((result: any) => {
     if (!result) return;
     
+    console.log(`[page.tsx updateBrowserState] Received result:`, result);
+
     // Use functional updates for state setters if depending on previous state,
     // although not strictly necessary here as we're just setting new values.
     if (result.screenshot) {
+      console.log(`[page.tsx updateBrowserState] Updating screenshot.`);
       setScreenshot(result.screenshot);
     }
-    if (result.title) {
-      setPageTitle(result.title);
+    if (result.pageTitle) {
+      console.log(`[page.tsx updateBrowserState] Updating pageTitle to: ${result.pageTitle}`);
+      setPageTitle(result.pageTitle);
     }
     if (result.formElements) {
+      console.log(`[page.tsx updateBrowserState] Updating formElements. Count: ${result.formElements?.length}`);
       setFormElements(result.formElements || []);
     }
     if (result.historyState) {
+      console.log(`[page.tsx updateBrowserState] Updating historyState.`);
       setHistoryState(result.historyState);
     }
     if (result.url) {
+      console.log(`[page.tsx updateBrowserState] Updating URL to: ${result.url}`);
       setUrl(result.url)
     }
   }, []); // Empty dependency array because setters are stable
