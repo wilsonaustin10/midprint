@@ -23,9 +23,34 @@ import uuid
 import base64
 from fastapi.responses import JSONResponse, Response
 import io
+import time
+from sse_starlette.sse import EventSourceResponse
 
 # Load environment variables
 load_dotenv()
+
+# Define constants
+SSE_TIMEOUT = 5.0  # Timeout for waiting on queue in seconds
+TASK_TIMEOUT_SECONDS = 10.0 # Timeout for stream endpoint waiting for queue
+
+# --- ADDED CONSTANT DEFINITION ---
+SSE_TIMEOUT = 30.0  # Timeout in seconds for waiting on the SSE queue
+# --- END ADDED CONSTANT DEFINITION ---
+
+# --- Add push_sse_update helper ---
+async def push_sse_update(task_id: str, update_data: Dict):
+    if task_id in task_states and "sse_queue" in task_states[task_id]:
+        queue = task_states[task_id]["sse_queue"]
+        if queue: # Check if queue exists
+            try:
+                # Don't block indefinitely if queue is full
+                await asyncio.wait_for(queue.put(update_data), timeout=1.0)
+            except asyncio.TimeoutError:
+                print(f"[SSE {task_id}] WARN: Queue put timed out for update: {update_data.get('type')}")
+            except Exception as push_err:
+                print(f"[SSE {task_id}] Error pushing update: {push_err}")
+    # else: Task state or queue not found, ignore update
+# --- End SSE Helper ---
 
 # Validate required environment variables
 def validate_environment():
@@ -112,9 +137,12 @@ def generate_task_id() -> str:
 
 async def execute_agent_task(task_id: str, task_request: TaskRequest, browser: Browser, session_manager: LinkedInSessionManager):
     # --- Define mock save session outside the try block --- 
-    async def mock_save_session(b):
+    async def mock_save_session_inner(b):
         print(f"[Mock Save Session] Called for browser related to task {task_id}. Skipping actual save.")
+        # Use push_sse_update for save session logs
+        await push_sse_update(task_id, {"type": "log", "message": "Attempting to save session..."})
         await asyncio.sleep(0.1) # Simulate small delay
+        await push_sse_update(task_id, {"type": "log", "message": "Session save processing complete."})
         return True
     # ----------------------------------------------------
     
@@ -122,16 +150,57 @@ async def execute_agent_task(task_id: str, task_request: TaskRequest, browser: B
     handler_success = False # Default to False
     handler_error: Optional[str] = None
     agent_handler_history = [] # Default to empty list
+    agent_handler: Optional[AgentHandler] = None # Initialize agent_handler
+
+    # --- Retrieve the existing SSE queue --- 
+    sse_queue = None
+    if task_id in task_states and "sse_queue" in task_states[task_id]:
+        sse_queue = task_states[task_id]["sse_queue"]
+    else:
+        # Log error if queue not found (critical)
+        print(f"[ERROR {task_id}] SSE queue not found in task_states at start of execution!")
+        # Attempt to create one as a fallback - might indicate a deeper issue
+        sse_queue = asyncio.Queue()
+        if task_id in task_states: # Ensure task_state exists
+             task_states[task_id]["sse_queue"] = sse_queue
+             print(f"[WARN {task_id}] Created fallback SSE queue.")
+        else: # Cannot even store the fallback queue
+             sse_queue = None # Reset queue to None if state doesn't exist
+             print(f"[ERROR {task_id}] Task state missing, cannot create fallback queue.")
+
+    # Ensure status is running and push update
+    if task_id in task_states: # Check state exists before updating
+        task_states[task_id]["status"] = "running"
+        if sse_queue: 
+            await push_sse_update(task_id, {"type": "status", "status": "running", "message": "Agent task started."})
+        else:
+            print(f"[WARN {task_id}] Cannot send initial status update, SSE queue missing.")
+    else:
+        print(f"[ERROR {task_id}] Task state missing, cannot set status to running.")
+        # Cannot proceed without task state
+        return 
 
     try:
         print(f"[execute_agent_task {task_id}] Starting agent run.")
-        agent_handler = AgentHandler(browser)
+        # Pass the push function to the handler for intra-step updates
+        # Ensure the AgentHandler can accept and use this callback
+        agent_handler = AgentHandler(browser, task_id)
+
+        # Agent execution logic
         returned_result = await agent_handler.run_agent(
             task=task_request.task,
             config=task_request.config,
             max_steps=task_request.max_steps
         )
-        print(f"[execute_agent_task {task_id}] Agent run finished. Raw result type: {type(returned_result)}")
+        print(f"[Agent {task_id}] Agent run finished.")
+        print(f"[Agent {task_id}] Processing agent results. Type: {type(returned_result)}")
+        # --- ADD LOGGING HERE ---
+        print(f"[Agent {task_id}] Raw returned_result keys: {returned_result.keys() if isinstance(returned_result, dict) else 'Not a dict'}")
+        print(f"[Agent {task_id}] Raw returned_result content: {returned_result}")
+        # --- END LOGGING ---
+
+        agent_handler_history = []
+        final_action_result = None
 
         # --- Robust Handling of Returned Result --- 
         if isinstance(returned_result, AgentHistoryList):
@@ -139,195 +208,167 @@ async def execute_agent_task(task_id: str, task_request: TaskRequest, browser: B
             agent_history_list = returned_result
             handler_success = agent_history_list.is_successful
             # --- Consistently use action_results attribute for history --- 
-            agent_handler_history = [res.dict() for res in agent_history_list.action_results] if hasattr(agent_history_list, 'action_results') and isinstance(agent_history_list.action_results, list) else [] 
+            # <<< Add try-except for dict conversion >>>
+            temp_history = []
+            if hasattr(agent_history_list, 'action_results') and isinstance(agent_history_list.action_results, list):
+                print(f"[DEBUG {task_id}] Converting direct action_results (len {len(agent_history_list.action_results)})")
+                try:
+                    for i, res in enumerate(agent_history_list.action_results):
+                        if hasattr(res, 'dict') and callable(res.dict):
+                            temp_history.append(res.dict())
+                        else:
+                            print(f"[ERROR {task_id}] Item {i} (direct) lacks .dict(). Appending str.")
+                            temp_history.append(str(res))
+                except Exception as dict_err:
+                    print(f"[ERROR {task_id}] Error converting direct action_results: {dict_err}")
+            agent_handler_history = temp_history
+            # <<< End try-except >>>
+
             if not handler_success:
                  handler_error = None
                  if hasattr(agent_history_list, 'final_result') and agent_history_list.final_result:
                      handler_error = agent_history_list.final_result.error
-                 elif agent_handler_history and agent_handler_history[-1].error:
-                     handler_error = agent_handler_history[-1].error
+                 elif agent_handler_history and isinstance(agent_handler_history[-1], dict) and agent_handler_history[-1].get('error'): # Check dict history
+                     handler_error = agent_handler_history[-1].get('error')
                  handler_error = handler_error or "AgentHistoryList success=False"
         
         elif isinstance(returned_result, dict):
-            print(f"[execute_agent_task {task_id}] Processing dict return.")
-            if "result" in returned_result and isinstance(returned_result["result"], AgentHistoryList):
-                 print(f"[execute_agent_task {task_id}] Found AgentHistoryList in dict['result'].")
-                 agent_history_list = returned_result["result"]
-                 handler_success = returned_result.get("success", agent_history_list.is_successful)
-                 # --- Consistently use action_results attribute for history (prefer dict key if exists) --- 
-                 if "history" in returned_result and isinstance(returned_result["history"], list):
-                     agent_handler_history = returned_result["history"]
-                 elif hasattr(agent_history_list, 'action_results') and isinstance(agent_history_list.action_results, list):
-                      agent_handler_history = [res.dict() for res in agent_history_list.action_results]
-                 else:
-                     agent_handler_history = [] # Default empty
-                 handler_error = returned_result.get("error")
-                 if not handler_success and not handler_error:
-                     local_error = None
-                     if hasattr(agent_history_list, 'final_result') and agent_history_list.final_result:
-                         local_error = agent_history_list.final_result.error
-                     elif agent_handler_history and agent_handler_history[-1].error:
-                         local_error = agent_handler_history[-1].error
-                     handler_error = local_error or "AgentHistoryList success=False (extracted from dict)"
-            else:
-                 # Dictionary format is unexpected
-                 print(f"[execute_agent_task {task_id}] WARNING: Dict return lacks expected 'result' key or correct type.")
-                 handler_success = False
-                 handler_error = "Agent handler returned dictionary in unexpected format."
-                 # Attempt to get history if key exists
-                 agent_handler_history = returned_result.get("history", [])
-        else:
-            # Handle completely unexpected return type
-            handler_success = False
-            handler_error = f"Agent handler returned unexpected type: {type(returned_result)}"
-            print(f"[execute_agent_task {task_id}] ERROR: {handler_error}")
-        # ---------------------------------------------
-
-        # Update task state using the determined history
-        print(f"[execute_agent_task {task_id}] Updating task state history ({len(agent_handler_history)} items) and step.")
-        task_states[task_id]["history"] = agent_handler_history
-        task_states[task_id]["current_step"] = len(agent_handler_history)
-        print(f"[execute_agent_task {task_id}] History/Step updated.")
-
-        # Determine final action result 
-        final_action_result: Optional[ActionResult] = None 
-        # --- Use action_results() if callable, else direct access --- 
-        action_results_list = None
-        if agent_history_list:
-             if hasattr(agent_history_list, 'action_results') and callable(agent_history_list.action_results):
-                 action_results_list = agent_history_list.action_results()
-             elif hasattr(agent_history_list, 'action_results') and isinstance(agent_history_list.action_results, list):
-                 action_results_list = agent_history_list.action_results
-
-        if isinstance(action_results_list, list) and action_results_list:
-             final_action_result = action_results_list[-1]
-        
-        # Decide final status
-        task_updated = False 
-        # (Removing debug logs from last step)
-        print(f"[execute_agent_task {task_id}] Deciding final status. handler_success={handler_success}, final_action_result is set: {final_action_result is not None}")
-        if handler_success and final_action_result:
+            print(f"[Agent {task_id}] Returned result is a dict. Checking for 'history' key.")
             try:
-                if hasattr(final_action_result, 'success') and hasattr(final_action_result, 'extracted_content'):
-                    # Use the success attribute from the *specific* final action result
-                    # Note: handler_success (overall success) might differ from final_action_result.success
-                    is_final_action_success = final_action_result.success 
-                    # Sometimes the final action might report success=None, treat None as success for completion status
-                    if is_final_action_success is None: 
-                         print(f"[execute_agent_task {task_id}] Final action success is None, treating as True for completion.")
-                         is_final_action_success = True 
-                         
-                    content_str = str(final_action_result.extracted_content) if final_action_result.extracted_content is not None else ""
+                # Check if 'history' key exists and is a list
+                history_list = returned_result.get('history')
+                if isinstance(history_list, list):
+                    agent_handler_history = history_list
+                    print(f"[Agent {task_id}] Successfully extracted 'history' list. Length: {len(agent_handler_history)}")
+                    # Optionally, extract the final answer if available
+                    final_answer = returned_result.get('final_answer')
+                    if final_answer:
+                        print(f"[Agent {task_id}] Extracted final_answer: {final_answer}")
+                        # We might want to use this final_answer later, perhaps as the final_action_result?
+                        # For now, just log it. We can decide how to use it later.
+                        # If the last item in history represents the final action, let's capture that.
+                        if agent_handler_history:
+                             # Assuming the structure within history allows direct access or needs parsing
+                             # Let's keep the previous logic for final_action_result for now
+                             pass # Keep existing logic below for final_action_result from history
 
-                    if is_final_action_success:
-                        task_states[task_id]["status"] = "completed"
-                        task_states[task_id]["result"] = content_str or "Success but no content extracted."
-                        last_action_str = task_states[task_id]["result"]
-                        task_states[task_id]["last_action"] = last_action_str 
-                        task_updated = True
-                        print(f"[execute_agent_task {task_id}] Final status: completed.")
-                    else: # Final action failed (e.g., done action reported success=False)
-                        task_states[task_id]["status"] = "failed"
-                        error_content_str = content_str or final_action_result.error or "Agent finished last step with success=False"
-                        task_states[task_id]["error"] = error_content_str
-                        task_states[task_id]["last_action"] = error_content_str
-                        task_updated = True
-                        print(f"[execute_agent_task {task_id}] Final status: failed (final action success=False).")
                 else:
-                     task_states[task_id]["status"] = "failed"
-                     task_states[task_id]["error"] = "Final action result object structure incorrect (missing success/extracted_content)."
-                     task_updated = True
-                     print(f"[execute_agent_task {task_id}] Final status: failed (final action structure incorrect).")
+                    print(f"[WARN {task_id}] 'history' key found but is not a list. Type: {type(history_list)}. History remains empty.")
             except Exception as e:
-                 print(f"[execute_agent_task - ERROR {task_id}] Exception processing final_action_result: {e}") 
-                 task_states[task_id]["status"] = "failed"
-                 task_states[task_id]["error"] = f"Exception processing final action: {e}"
-                 task_updated = True
-                 print(f"[execute_agent_task {task_id}] Final status: failed (exception processing final action).")
+                print(f"[ERROR {task_id}] Error processing dict result for 'history': {e}")
+        else:
+            print(f"[WARN {task_id}] Agent returned an unexpected type: {type(returned_result)}. History remains empty.")
+        # --- End Robust Handling ---
 
-        elif not handler_success:
-             task_states[task_id]["status"] = "failed"
-             task_states[task_id]["error"] = handler_error or "Agent handler failed during execution."
-             task_updated = True
-             print(f"[execute_agent_task {task_id}] Final status: failed (handler_success=False).")
+        # Determine final action result from history if available
+        # This logic might need adjustment based on history item structure
+        action_results_list = None # Reset just in case
+        if agent_handler_history:
+            try:
+                # Assuming history is a list of objects/dicts with 'result' or similar key
+                # Let's refine this once we know the structure inside history list items
+                if agent_handler_history and isinstance(agent_handler_history[-1], dict) and 'result' in agent_handler_history[-1]:
+                     final_action_result = agent_handler_history[-1]['result'] # Example extraction
+                elif agent_handler_history: # Fallback if structure is different
+                     final_action_result = str(agent_handler_history[-1]) # Simple string representation
 
-        # Fallback if no status was set (should be less likely now)
-        if not task_updated:
-             task_states[task_id]["status"] = "failed"
-             task_states[task_id]["error"] = "Agent handler finished but final status could not be determined (fallback)."
-             print(f"[execute_agent_task {task_id}] Final status: failed (fallback reached).")
+                print(f"[Agent {task_id}] Final action result determined from history: {final_action_result}")
+                action_results_list = agent_handler_history # Use the extracted history
+            except Exception as e:
+                 print(f"[ERROR {task_id}] Error extracting final result from history: {e}")
+                 final_action_result = "Error extracting final result."
+
+        if action_results_list is None:
+             print(f"[WARN {task_id}] action_results_list is None after processing.")
+             action_results_list = [] # Ensure it's an empty list if nothing was extracted
+
+        # --- Update task state with final details ---
+        final_status = "completed" # Assume completed unless error occurred during processing
+        if task_states.get(task_id):
+            task_states[task_id]["status"] = final_status
+            task_states[task_id]["history"] = action_results_list # Store the processed history
+            # Store final_action_result or final_answer? Let's stick to action result for now.
+            task_states[task_id]["last_action"] = str(final_action_result) if final_action_result else "N/A"
+            print(f"[Agent {task_id}] Updated final task state: Status='{final_status}', History Length={len(action_results_list)}, Final Result='{final_action_result}'")
+            await push_sse_update(task_id, {"status": final_status, "history": action_results_list, "result": str(final_action_result) if final_action_result else None})
+        else:
+             print(f"[WARN {task_id}] Task state not found for final update.")
 
         # Save session 
         print(f"[execute_agent_task {task_id}] Attempting to save session.")
         try:
-            # Using mock save session for now
-            await mock_save_session(browser)
-            print(f"[execute_agent_task {task_id}] Session save call completed.")
+            # Using mock save session
+            save_success = await mock_save_session_inner(browser) # Pass browser instance
+            if not save_success:
+                await push_sse_update(task_id, {"type": "log", "level":"warning", "message": "Session saving failed."})
         except Exception as save_err:
-            print(f"[execute_agent_task {task_id}] Error during session save: {str(save_err)}") 
-            # SAFETY CHECK: Ensure task_id exists and is a dict before accessing status
-            print(f"[SAVE ERROR] Checking task_states for {task_id} before status update.")
-            if task_id in task_states and isinstance(task_states.get(task_id), dict):
-                print(f"[SAVE ERROR] task_states[{task_id}] is a dict. Current status: {task_states[task_id].get('status')}")
-                if task_states[task_id].get("status") == "running": # Update status only if it was still running
-                     task_states[task_id]["status"] = "failed"
-                     task_states[task_id]["error"] = f"Agent task done, but failed to save session: {str(save_err)}"
-            else:
-                print(f"[SAVE ERROR] task_states[{task_id}] is missing or not a dict. Cannot update status.")
-                # Avoid further errors by not trying to update the state if it's invalid
-                pass 
+            print(f"[execute_agent_task {task_id}] Error saving session: {save_err}")
+            await push_sse_update(task_id, {"type": "log", "level":"error", "message": f"Error saving session: {save_err}"})
+        print(f"[execute_agent_task {task_id}] Session save call completed.")
 
     except Exception as e:
         print(f"[OUTER CATCH] Caught exception in execute_agent_task for {task_id}: {str(e)}")
-        # SAFETY CHECK: Ensure task_id exists and is a dict before assigning failure status
-        if task_id in task_states and isinstance(task_states.get(task_id), dict):
-            task_states[task_id]["status"] = "failed"
-            task_states[task_id]["error"] = str(e)
+        import traceback
+        traceback.print_exc()
+        # Update state and push error if possible
+        if task_id in task_states:
+             task_states[task_id]["status"] = "failed"
+             task_states[task_id]["error"] = str(e)
+             # Push outer catch error
+             await push_sse_update(task_id, {"type": "failed", "status": "failed", "error": f"Unexpected error during task execution: {str(e)}"})
         else:
-            print(f"[OUTER CATCH] task_states[{task_id}] is missing or not a dict. Cannot set final failure state.")
-            # Log the original error without modifying potentially corrupt state
-            pass
-        # Log the exception regardless
-        print(f"Exception in execute_agent_task for {task_id}: {str(e)}") # Original logging kept
+            print(f"[OUTER CATCH {task_id}] Task state missing or invalid, cannot set final failure state or push update.")
+            # Log the error, but cannot update state or push SSE
+
     finally:
-        # Clean up browser resources
         print(f"[FINALLY] Entering finally block for {task_id}.")
-        # SAFETY CHECK: Ensure task_id exists and is a dict before checking status for cleanup
-        task_state_valid = task_id in task_states and isinstance(task_states.get(task_id), dict)
+        task_state_valid = task_id in task_states
         print(f"[FINALLY] task_state_valid for {task_id}: {task_state_valid}")
         
-        if task_state_valid and task_states[task_id].get("status") in ["completed", "failed"]:
-            print(f"[FINALLY] Task {task_id} status is {task_states[task_id].get('status')}. Cleaning up browser.")
-            if browser: # Check if browser object exists
-                try:
-                    await browser.close()
-                    print(f"Closed browser for task {task_id}")
-                except Exception as close_err:
-                    print(f"Error closing browser for task {task_id}: {str(close_err)}")
-            # Clean up context and instance references
-            if task_id in task_states and "context" in task_states[task_id]:
-                del task_states[task_id]["context"]
-                print(f"Removed context reference for task {task_id}")
-            if task_id in task_states and "browser" in task_states[task_id]:
-                del task_states[task_id]["browser"]
-                print(f"Removed browser reference for task {task_id}")
-        elif task_state_valid:
-             print(f"[FINALLY] Task {task_id} status is {task_states[task_id].get('status')}. Not cleaning up browser yet.")
-        else:
-            print(f"[FINALLY] Task state for {task_id} is invalid. Skipping browser cleanup check based on status.")
-            # Attempt cleanup even if state is invalid, as resources might leak
-            if browser: # Check if browser object exists
-                try:
-                    await browser.close()
-                    print(f"[FINALLY - INVALID STATE] Closed browser for task {task_id}")
-                except Exception as close_err:
-                    print(f"[FINALLY - INVALID STATE] Error closing browser for task {task_id}: {str(close_err)}")
-            if task_id in task_states and "context" in task_states[task_id]:
-                del task_states[task_id]["context"]
-                print(f"[FINALLY - INVALID STATE] Removed context reference for task {task_id}")
-            if task_id in task_states and "browser" in task_states[task_id]:
-                del task_states[task_id]["browser"]
-                print(f"[FINALLY - INVALID STATE] Removed browser reference for task {task_id}")
+        # --- Send Final SSE Update (if not already sent by normal flow or outer catch) ---
+        final_status_sent = False
+        if task_state_valid: 
+             state_at_finally = task_states[task_id].get("status")
+             if state_at_finally == "completed" or state_at_finally == "failed":
+                 final_status_sent = True # Assume status already set and pushed
+        
+        if task_state_valid and not final_status_sent:
+            print(f"[FINALLY] Task {task_id} status was {task_states[task_id].get('status')}, setting to failed and pushing.")
+            task_states[task_id]["status"] = "failed"
+            task_states[task_id]["error"] = task_states[task_id].get("error", "Task failed in finally block.")
+            await push_sse_update(task_id, {
+                 "type": "failed", 
+                 "status": "failed", 
+                 "error": task_states[task_id]["error"]
+            })
+            final_status_sent = True # Mark as sent
+
+        # --- Browser Cleanup --- 
+        # (Cleanup logic remains the same)
+        if browser:
+             try:
+                 await browser.close()
+                 print(f"Closed browser for task {task_id}")
+                 # Push log after browser close attempt
+                 await push_sse_update(task_id, {"type": "log", "message": "Browser closed."}) 
+             except Exception as close_err:
+                 print(f"Error closing browser for task {task_id}: {str(close_err)}")
+                 await push_sse_update(task_id, {"type": "log", "level":"error", "message": f"Error closing browser: {close_err}"}) 
+
+        # --- Remove Task State and Queue --- 
+        if task_id in task_states:
+            # Signal queue completion if it exists
+            if "sse_queue" in task_states[task_id] and task_states[task_id]["sse_queue"]:
+                 try:
+                     await task_states[task_id]["sse_queue"].put(None) # Signal end
+                 except Exception as q_err:
+                     print(f"[FINALLY {task_id}] Error putting final marker in queue: {q_err}")
+            # Remove task state after a delay
+            # We will keep the task state for now to allow the stream endpoint to serve the final status
+            # await asyncio.sleep(2)
+            # if task_id in task_states: # Check again
+            #     del task_states[task_id]
+            #     print(f"Removed context reference for task {task_id}")
         print(f"[execute_agent_task {task_id}] Reached end of finally block.")
 
 @app.get("/health")
@@ -347,7 +388,8 @@ async def create_browser(request: BrowserCreateRequest):
         "current_step": 0,
         "total_steps": 0,
         "history": [],
-        "error": None
+        "error": None,
+        "sse_queue": asyncio.Queue()
     }
     
     try:
@@ -406,8 +448,12 @@ async def run_agent(request: Request, task_request: TaskRequest, background_task
         "current_step": 0,
         "total_steps": task_request.max_steps,
         "history": [],
-        "error": None
+        "error": None,
+        "sse_queue": asyncio.Queue()
     }
+
+    # Add a small delay to allow state to propagate before returning
+    await asyncio.sleep(0.1) 
 
     try:
         # In test mode, handle test cases appropriately
@@ -487,6 +533,114 @@ async def run_agent(request: Request, task_request: TaskRequest, background_task
         task_states[task_id]["status"] = "failed"
         task_states[task_id]["error"] = str(e)
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/task/{task_id}/stream")
+async def stream_task_events(task_id: str, request: Request):
+    # Waiting Logic (remains the same)
+    queue: Optional[asyncio.Queue] = None
+    start_time = time.time()
+    timeout_seconds = 10.0
+    print(f"[SSE /task/{task_id}/stream] Waiting for task state and queue...")
+    while time.time() - start_time < timeout_seconds:
+        task_state = task_states.get(task_id)
+        if task_state and "sse_queue" in task_state and task_state["sse_queue"] is not None:
+            queue = task_state["sse_queue"]
+            print(f"[SSE /task/{task_id}/stream] Found valid sse_queue after {time.time() - start_time:.2f}s.")
+            break
+        print(f"[SSE /task/{task_id}/stream] sse_queue not ready yet. Checking again...")
+        await asyncio.sleep(0.2)
+    
+    if not queue:
+        print(f"[SSE /task/{task_id}/stream] Timeout: Task state or queue not found after {timeout_seconds}s.")
+        current_state = task_states.get(task_id)
+        print(f"[SSE /task/{task_id}/stream] Final state check: {current_state}")
+        raise HTTPException(status_code=404, detail=f"Task stream timed out waiting for initialization after {timeout_seconds} seconds.")
+
+    print(f"[SSE /task/{task_id}/stream] Client connecting, using EventSourceResponse.")
+    
+    # Return EventSourceResponse instead of StreamingResponse
+    return EventSourceResponse(
+        sse_event_generator(task_id, queue, request), 
+        ping=15,  # Send a ping comment every 15 seconds
+        # Optional: Customize headers if needed, but sse-starlette sets defaults
+        # headers={"X-Custom-Header": "value"} 
+    )
+
+async def sse_event_generator(task_id: str, queue: asyncio.Queue, request: Request):
+    print(f"[SSE {task_id}] Starting sse_event_generator.")
+    client_disconnected = False
+    try:
+        while not client_disconnected:
+            # Check connection status at the start of each loop iteration
+            if await request.is_disconnected():
+                print(f"[SSE {task_id}] Client disconnected detected at start of loop.")
+                client_disconnected = True
+                break
+
+            try:
+                # Wait for the next item from the queue with a timeout
+                item = await asyncio.wait_for(queue.get(), timeout=SSE_TIMEOUT)
+
+                # --- DEBUG: Log raw item --- 
+                print(f"[SSE {task_id}] Raw item from queue: {item!r}")
+                # --- END DEBUG --- 
+
+                if item is None:
+                    print(f"[SSE {task_id}] Received None, ending stream generator.")
+                    break  # End the stream gracefully
+
+                event_type = item.get("type", "message") # Default to message type
+                event_data = item # Use the whole item as data
+
+                # Ensure data is always valid JSON string for sse-starlette
+                try:
+                    json_data_string = json.dumps(event_data)
+                    yield {
+                        "event": event_type,
+                        "data": json_data_string
+                        # Optionally add "id" or "retry" here if needed
+                    }
+                    print(f"[SSE {task_id}] Yielded dict: event='{event_type}', data='{json_data_string!r}'")
+                except TypeError as e:
+                    print(f"[ERROR SSE {task_id}] Failed to serialize event data: {event_data}. Error: {e}")
+                    # Send a generic error event if serialization fails
+                    error_data_string = json.dumps({"type": "error", "message": f"Internal SSE serialization error: {e}"})
+                    yield {
+                        "event": "error",
+                        "data": error_data_string
+                    }
+
+                queue.task_done()
+
+            except asyncio.TimeoutError:
+                # No need to yield anything here, EventSourceResponse handles pings
+                # print(f"[SSE {task_id}] Timeout waiting for queue item.") # Optional logging
+                pass # Just continue waiting
+            except Exception as e:
+                print(f"[ERROR SSE {task_id}] Error processing queue item: {e}")
+                # Send a structured error message back
+                error_data_string = json.dumps({"type": "error", "message": f"Error processing SSE queue: {e}"})
+                yield {
+                    "event": "error",
+                    "data": error_data_string
+                }
+                # Break on error processing queue item
+                break
+
+    except asyncio.CancelledError:
+         print(f"[SSE {task_id}] Generator cancelled (client likely disconnected).")
+         client_disconnected = True # Ensure loop terminates
+    except Exception as e:
+        print(f"[SSE {task_id}] Unexpected error in outer generator loop: {e}")
+        # Attempt to yield a final error message
+        try:
+             error_data = json.dumps({"type": "error", "message": f"Critical SSE generator error: {e}"})
+             yield {"event": "error", "data": error_data}
+        except Exception as final_e:
+             print(f"[SSE {task_id}] Failed to yield final error message: {final_e}")
+    finally:
+        print(f"[SSE {task_id}] Event generator finished (disconnected: {client_disconnected}).")
+        # Cleanup logic if needed
 
 @app.get("/task/{task_id}", response_model=TaskState)
 async def get_task_state(task_id: str):

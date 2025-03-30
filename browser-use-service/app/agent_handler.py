@@ -11,18 +11,102 @@ import json
 from datetime import datetime
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
+import logging # Import logging
+import re # Import regex for parsing
+
+# --- Helper Task Function --- 
+# Define this outside the handler class to avoid complex scoping/self issues
+async def _push_sse_update_task(task_id: str, sse_event_data: dict):
+    try:
+        # Import here to avoid potential top-level circular imports if main imports handler
+        from .main import push_sse_update 
+        await push_sse_update(task_id, sse_event_data)
+    except Exception as e:
+        print(f"[_push_sse_update_task Error] Failed to push update for task {task_id}: {e}")
+# --- End Helper Task Function --- 
+
+# --- Custom Log Handler for SSE Updates --- 
+class SSELogHandler(logging.Handler):
+    def __init__(self, task_id, max_steps):
+        super().__init__()
+        self.task_id = task_id
+        self.max_steps = max_steps
+        self.current_step = 0 # Track the current step parsed
+
+    def emit(self, record):
+        try:
+            log_message = self.format(record) # This should contain only the raw message now
+            # --- Simplified Regex Patterns (matching raw message) --- 
+            # Match lines like: 📍 Step 2
+            step_match = re.search(r"^📍 Step (\d+)", log_message)
+            # Match lines like: 🛠️  Action 1/1: {"search_google":...}
+            action_match = re.search(r"^🛠️\s+Action \d+/\d+:\s+(.*)", log_message)
+            # Match lines like: 📄 Result: The best deal...
+            result_match = re.search(r"^📄 Result: (.*)", log_message)
+            # Match lines like: 🚀 Starting task: ...
+            start_match = re.search(r"^🚀 Starting task: (.*)", log_message)
+            # --- End Simplified Regex --- 
+
+            sse_event_data = None
+            
+            if start_match: # Handle start message for initial total_steps
+                 self.current_step = 0
+                 sse_event_data = {
+                     "type": "agent_step",
+                     "step": 0,
+                     "message": log_message, # Send the full start message
+                     "total_steps": self.max_steps
+                 }
+            elif step_match:
+                self.current_step = int(step_match.group(1))
+                sse_event_data = {
+                    "type": "agent_step",
+                    "step": self.current_step,
+                    "message": f"Processing Step {self.current_step}...",
+                    "total_steps": self.max_steps 
+                }
+            elif action_match:
+                action_detail = action_match.group(1).strip()
+                sse_event_data = {
+                    "type": "history_update", 
+                    "step": self.current_step, 
+                    "message": f"Action: {action_detail[:100]}...",
+                    "total_steps": self.max_steps
+                }
+            elif result_match: 
+                final_result = result_match.group(1).strip()
+                sse_event_data = {
+                    "type": "history_update",
+                    "step": self.current_step, 
+                    "message": f"Result: {final_result[:100]}...",
+                    "total_steps": self.max_steps
+                }
+
+            if sse_event_data:
+                # print(f"[SSELogHandler DEBUG {self.task_id}] Pushing: {sse_event_data}") # Uncomment for intense debug
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(_push_sse_update_task(self.task_id, sse_event_data))
+                except RuntimeError: 
+                    print(f"[SSELogHandler Warning] No running event loop to push update for {self.task_id}")
+
+        except Exception as e:
+            print(f"[SSELogHandler Error] Exception in emit: {e}")
+# --- End Custom Log Handler ---
 
 class AgentHandler:
     """Handler for browser-use Agent integration."""
     
-    def __init__(self, browser: Browser):
+    def __init__(self, browser: Browser, task_id: str):
         """
         Initialize the agent handler.
         
         Args:
             browser: Browser instance to use for automation
+            task_id: The ID of the task being run, for SSE updates
         """
         self.browser = browser
+        self.task_id = task_id
         self.controller = None
         self.agent = None
         self.history = []
@@ -77,8 +161,26 @@ class AgentHandler:
             browser=self.browser,
             controller=self.controller,
             llm=llm,
-            # Any additional configurations from browser-use can go here
         )
+
+        # --- Add Custom Log Handler --- 
+        try:
+            agent_logger = logging.getLogger('agent') 
+            agent_logger.setLevel(logging.INFO) 
+            
+            # Pass max_steps when creating the handler
+            self.sse_log_handler = SSELogHandler(self.task_id, max_steps)
+            formatter = logging.Formatter('%(message)s') 
+            self.sse_log_handler.setFormatter(formatter)
+            # Avoid adding duplicate handlers if initialize_agent is called multiple times
+            if not any(isinstance(h, SSELogHandler) for h in agent_logger.handlers):
+                 agent_logger.addHandler(self.sse_log_handler)
+                 print(f"[AgentHandler] Added SSELogHandler to logger 'agent' for task {self.task_id}")
+            else:
+                 print(f"[AgentHandler] SSELogHandler already present for logger 'agent' task {self.task_id}")
+        except Exception as e:
+            print(f"[AgentHandler Error] Failed to add SSELogHandler: {e}")
+        # --- End Log Handler Setup ---
         
         return self.agent
         
@@ -94,42 +196,56 @@ class AgentHandler:
         Returns:
             Dict with execution results and history
         """
-        self.history = []
-        print(f"[AgentHandler] run_agent called for task: {task}") # LOG 1
+        self.history = [] # Reset history
+        print(f"[AgentHandler] run_agent called for task: {task}") 
         
-        # Initialize the agent
-        print("[AgentHandler] Initializing agent...") # LOG 2a
+        # Initialize the agent (this will now also add the log handler)
+        print("[AgentHandler] Initializing agent...") 
         await self.initialize_agent(task, config, max_steps)
-        print("[AgentHandler] Agent initialized.") # LOG 2b
+        print("[AgentHandler] Agent initialized.") 
         
-        # Create a listener to capture agent history
-        def history_listener(event_type, data):
-            timestamp = datetime.now().isoformat()
-            self.history.append({
-                "timestamp": timestamp,
-                "type": event_type,
-                "data": data
-            })
-        
-        # Register the listener
-        if hasattr(self.agent, "add_listener"):
-            self.agent.add_listener(history_listener)
-        
+        # --- Remove the previous listener logic as it's not supported --- 
+        # async def push_update_task(event_data): ...
+        # async def history_listener(event_type, data): ...
+        # if hasattr(self.agent, "add_listener"): ...
+        # --- End Removal --- 
+
         # Run the agent
         try:
-            print("[AgentHandler] Running agent...") # LOG 3
+            print("[AgentHandler] Running agent...") 
             result = await self.agent.run(max_steps=max_steps)
-            print(f"[AgentHandler] Agent run finished. Result: {result}") # LOG 4
+            print(f"[AgentHandler] Agent run finished. Result: {result}") 
+            
+            # --- Remove Log Handler After Run --- 
+            try:
+                if hasattr(self, 'sse_log_handler') and self.sse_log_handler:
+                    agent_logger = logging.getLogger('agent')
+                    agent_logger.removeHandler(self.sse_log_handler)
+                    print(f"[AgentHandler] Removed SSELogHandler for task {self.task_id}")
+                    self.sse_log_handler = None # Clear reference
+            except Exception as e:
+                 print(f"[AgentHandler Error] Failed to remove SSELogHandler: {e}")
+            # --- End Handler Removal --- 
             
             return {
                 "success": True,
                 "result": result,
-                "history": self.history,
-                "steps_completed": len(self.history),
+                "history": self.history, # History is now populated by logs, not listener
+                "steps_completed": len(self.history), # This might be inaccurate now
                 "task": task
             }
         except Exception as e:
-            print(f"[AgentHandler] Exception during agent run: {str(e)}") # LOG 5
+            print(f"[AgentHandler] Exception during agent run: {str(e)}") 
+            # --- Remove Log Handler on Error --- 
+            try:
+                if hasattr(self, 'sse_log_handler') and self.sse_log_handler:
+                    agent_logger = logging.getLogger('agent')
+                    agent_logger.removeHandler(self.sse_log_handler)
+                    print(f"[AgentHandler] Removed SSELogHandler on error for task {self.task_id}")
+                    self.sse_log_handler = None # Clear reference
+            except Exception as e_rem:
+                 print(f"[AgentHandler Error] Failed to remove SSELogHandler on error: {e_rem}")
+            # --- End Handler Removal --- 
             return {
                 "success": False,
                 "error": str(e),

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import ChatBox from "./components/ChatBox";
 import { Message } from "../types/messages";
 import InteractiveBrowser from "./components/InteractiveBrowser";
@@ -27,6 +27,12 @@ export default function Home() {
   }>({})
   const [url, setUrl] = useState<string>('https://google.com')
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [logs, setLogs] = useState<string[]>([]); // State for logs
+
+  // Wrap addLog in useCallback
+  const addLog = useCallback((message: string) => {
+    setLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${message}`]);
+  }, []); // Empty dependency array is sufficient here
 
   // Initialize browser session when component mounts
   useEffect(() => {
@@ -108,6 +114,7 @@ export default function Home() {
             sessionId={sessionId} 
             initialMessages={initialMessages} 
             updateBrowserState={updateBrowserState}
+            addLog={addLog}
           />
         </div>
         <div className="md:col-span-3 bg-white rounded-lg shadow-md border">
@@ -126,6 +133,8 @@ export default function Home() {
               historyState={historyState}
               sessionId={sessionId} 
               updateBrowserState={updateBrowserState} 
+              logs={logs}
+              addLog={addLog}
             />
           )}
         </div>

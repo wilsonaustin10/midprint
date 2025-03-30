@@ -269,7 +269,7 @@ export async function runAgentTask(task: string, sessionId: string): Promise<Act
         config: {
           llm: {
             provider: 'openai',
-            model: 'gpt-4'
+            model: 'gpt-4o'
           }
         },
         browser_info: {

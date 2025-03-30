@@ -21,13 +21,14 @@ export type P = {
         canGoForward?: boolean;
     }
     setUrl: (url: string) => void;
-    updateBrowserState: (result: ActionResult) => void
+    updateBrowserState: (result: ActionResult) => void;
+    logs: string[];
+    addLog: (message: string) => void;
 }
 
-export default function InteractiveBrowser({ sessionId, url, screenshot, formElements, historyState, setUrl, updateBrowserState }: P) {
+export default function InteractiveBrowser({ sessionId, url, screenshot, formElements, historyState, setUrl, updateBrowserState, logs, addLog }: P) {
     
     const [isLoading, setIsLoading] = useState<boolean>(false)
-    const [logs, setLogs] = useState<string[]>([])
     const [isLoginDialogOpen, setIsLoginDialogOpen] = useState(false)
     const [loginFields, setLoginFields] = useState<{
         username: { id: string; name: string; testId: string; },
@@ -122,11 +123,6 @@ export default function InteractiveBrowser({ sessionId, url, screenshot, formEle
         } finally {
             setIsLoading(false);
         }
-    };
-
-    // Modify 
-    const addLog = (message: string) => {
-        setLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${message}`]);
     };
 
     const handleNavigation = async (targetUrl: string) => {

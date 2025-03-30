@@ -1,102 +1,54 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import React from 'react';
 import { Progress } from "@/components/ui/progress"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { SERVICE_BASE_URL, ENDPOINTS } from '../api/browser-service/actions'
 
 type TaskProgressProps = {
-  taskId: string | null
-  onComplete?: () => void
+  status: string | null;
+  currentStep: number | null;
+  totalSteps: number | null;
+  lastAction?: string | null;
+  error?: string | null;
 }
 
-export default function TaskProgress({ taskId, onComplete }: TaskProgressProps) {
-  const [taskStatus, setTaskStatus] = useState<{
-    status: string
-    current_step: number
-    total_steps: number
-    last_action?: string
-    history: any[]
-  } | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null)
-
-  useEffect(() => {
-    if (!taskId) return
-
-    // Set up polling
-    const intervalId = setInterval(async () => {
-      try {
-        const response = await fetch(`${SERVICE_BASE_URL}${ENDPOINTS.TASK_STATUS}/${taskId}`)
-        if (!response.ok) {
-          throw new Error(`Failed to fetch task status: ${response.statusText}`)
-        }
-        
-        const data = await response.json()
-        setTaskStatus(data)
-        
-        // If task is completed or failed, stop polling
-        if (data.status === 'completed' || data.status === 'failed') {
-          if (pollingInterval) {
-            clearInterval(pollingInterval)
-            setPollingInterval(null)
-          }
-          
-          // Call onComplete callback if provided
-          if (onComplete) {
-            onComplete()
-          }
-        }
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Unknown error fetching task status')
-        // Stop polling on error
-        if (pollingInterval) {
-          clearInterval(pollingInterval)
-          setPollingInterval(null)
-        }
-      }
-    }, 1000)
-    
-    setPollingInterval(intervalId)
-    
-    // Cleanup on unmount
-    return () => {
-      if (intervalId) {
-        clearInterval(intervalId)
-      }
-    }
-  }, [taskId])
-
-  if (!taskId || !taskStatus) {
-    return null
+export default function TaskProgress({ 
+    status, 
+    currentStep, 
+    totalSteps, 
+    lastAction, 
+    error 
+}: TaskProgressProps) {
+  
+  if (!status || currentStep === null || totalSteps === null) {
+    // Don't render anything if essential info is missing
+    return null; 
   }
 
   // Calculate progress percentage
-  const progressPercentage = taskStatus.total_steps > 0
-    ? Math.min(100, (taskStatus.current_step / taskStatus.total_steps) * 100)
+  const progressPercentage = totalSteps > 0
+    ? Math.min(100, (currentStep / totalSteps) * 100)
     : 0
 
-  // Get the latest action from history if available
-  const latestAction = taskStatus.history.length > 0
-    ? taskStatus.history[taskStatus.history.length - 1]
-    : null
+  // Format status for display
+  const displayStatus = status.charAt(0).toUpperCase() + status.slice(1);
 
   return (
     <Card className="w-full">
       <CardHeader className="pb-2">
         <CardTitle>Task Progress</CardTitle>
         <CardDescription>
-          Status: {taskStatus.status.charAt(0).toUpperCase() + taskStatus.status.slice(1)}
+          Status: {displayStatus}
         </CardDescription>
       </CardHeader>
       <CardContent>
         <Progress value={progressPercentage} className="mb-2" />
         <div className="text-sm text-muted-foreground">
-          Step {taskStatus.current_step} of {taskStatus.total_steps || '?'}
+          Step {currentStep} of {totalSteps || '?'}
         </div>
-        {latestAction && (
+        {lastAction && (
           <div className="mt-2 text-sm">
-            <span className="font-semibold">Last action:</span> {latestAction.action}
+            <span className="font-semibold">Last action:</span> {lastAction}
           </div>
         )}
         {error && (
