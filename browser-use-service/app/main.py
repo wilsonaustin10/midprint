@@ -25,6 +25,11 @@ from fastapi.responses import JSONResponse, Response
 import io
 import time
 from sse_starlette.sse import EventSourceResponse
+import logging
+
+# --- ADDED logger definition ---
+logger = logging.getLogger(__name__)
+# --- END ADDED logger definition ---
 
 # Load environment variables
 load_dotenv()
@@ -152,21 +157,27 @@ async def execute_agent_task(task_id: str, task_request: TaskRequest, browser: B
     agent_handler_history = [] # Default to empty list
     agent_handler: Optional[AgentHandler] = None # Initialize agent_handler
 
-    # --- Retrieve the existing SSE queue --- 
+    # --- Retrieve the existing SSE queue AND context --- 
     sse_queue = None
-    if task_id in task_states and "sse_queue" in task_states[task_id]:
-        sse_queue = task_states[task_id]["sse_queue"]
+    browser_context = None # Added context retrieval
+    if task_id in task_states:
+        sse_queue = task_states[task_id].get("sse_queue")
+        browser_context = task_states[task_id].get("context") # Retrieve context
+        if not browser_context:
+             print(f"[ERROR {task_id}] Browser context not found in task_states!")
+             # Should we fail here? Or try to create one?
+             # For now, let's log and potentially fail later if AgentHandler requires it.
+        if not sse_queue:
+            # Log error if queue not found (critical)
+            print(f"[ERROR {task_id}] SSE queue not found in task_states at start of execution!")
+            # Attempt to create one as a fallback - might indicate a deeper issue
+            sse_queue = asyncio.Queue()
+            task_states[task_id]["sse_queue"] = sse_queue
+            print(f"[WARN {task_id}] Created fallback SSE queue.")
     else:
-        # Log error if queue not found (critical)
-        print(f"[ERROR {task_id}] SSE queue not found in task_states at start of execution!")
-        # Attempt to create one as a fallback - might indicate a deeper issue
-        sse_queue = asyncio.Queue()
-        if task_id in task_states: # Ensure task_state exists
-             task_states[task_id]["sse_queue"] = sse_queue
-             print(f"[WARN {task_id}] Created fallback SSE queue.")
-        else: # Cannot even store the fallback queue
-             sse_queue = None # Reset queue to None if state doesn't exist
-             print(f"[ERROR {task_id}] Task state missing, cannot create fallback queue.")
+        print(f"[ERROR {task_id}] Task state missing, cannot retrieve queue or context.")
+        # Cannot proceed without task state
+        return 
 
     # Ensure status is running and push update
     if task_id in task_states: # Check state exists before updating
@@ -182,9 +193,15 @@ async def execute_agent_task(task_id: str, task_request: TaskRequest, browser: B
 
     try:
         print(f"[execute_agent_task {task_id}] Starting agent run.")
-        # Pass the push function to the handler for intra-step updates
-        # Ensure the AgentHandler can accept and use this callback
-        agent_handler = AgentHandler(browser, task_id)
+        
+        # --- MODIFIED: Pass context AND queue to AgentHandler --- 
+        if not browser_context:
+             raise ValueError(f"Browser context is missing for task {task_id}, cannot start agent.")
+        if not sse_queue:
+             # This should ideally not happen due to fallback logic earlier, but check anyway
+             raise ValueError(f"SSE queue is missing for task {task_id}, cannot start agent.")
+             
+        agent_handler = AgentHandler(browser, browser_context, task_id, sse_queue)
 
         # Agent execution logic
         returned_result = await agent_handler.run_agent(
@@ -488,6 +505,24 @@ async def run_agent(request: Request, task_request: TaskRequest, background_task
         browser = task_states[browser_task_id]["browser"]
         context = task_states[browser_task_id]["context"]
         
+        # --- ADDED: Initial Navigation --- 
+        try:
+             initial_url = "https://www.google.com" # Or another suitable starting page
+             logger.info(f"[run-agent {task_id}] Performing initial navigation to {initial_url}")
+             if hasattr(context, 'navigate_to') and callable(context.navigate_to):
+                 await context.navigate_to(initial_url) 
+             else:
+                 # Fallback: Try using Playwright page directly if context is a wrapper
+                 if hasattr(context, 'page') and hasattr(context.page, 'goto'):
+                     await context.page.goto(initial_url)
+                 else:
+                     logger.warning(f"[run-agent {task_id}] Context object lacks navigate_to or page.goto method.")
+             logger.info(f"[run-agent {task_id}] Initial navigation successful.")
+        except Exception as nav_err:
+             logger.error(f"[run-agent {task_id}] Error during initial navigation: {nav_err}", exc_info=True)
+             # Don't fail the whole task, but log the error
+        # --- END ADDED: Initial Navigation ---
+             
         # Initialize session manager without automatic login
         session_manager = LinkedInSessionManager()
 

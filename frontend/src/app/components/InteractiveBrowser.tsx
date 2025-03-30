@@ -39,12 +39,7 @@ export default function InteractiveBrowser({ sessionId, url, screenshot, formEle
     const [value] = useDebounce(text, 1000)
     const browserRef = useRef<HTMLDivElement>(null)
     const [focusedFormElement, setFocusedFormElement] = useState<FormElement | null>(null)
-
-    // State variables to handle auto-refresh of site screenshots
-    const [autoRefresh, setAutoRefresh] = useState<boolean>(false);
-    const [refreshInterval, setRefreshInterval] = useState<number>(2000); // 2 seconds
-    const refreshTimerRef = useRef<NodeJS.Timeout | null>(null);
-
+    const eventSourceRef = useRef<EventSource | null>(null); // Ref to hold the EventSource instance
 
     // Initialize session and connect to SSE
     useEffect(() => {
@@ -77,53 +72,119 @@ export default function InteractiveBrowser({ sessionId, url, screenshot, formEle
         initBrowser();
 
         return () => {
-            if (refreshTimerRef.current) {
-                clearInterval(refreshTimerRef.current);
-                refreshTimerRef.current = null;
+            if (eventSourceRef.current) {
+                console.log("SSE: Closing connection due to cleanup.");
+                eventSourceRef.current.close();
+                eventSourceRef.current = null;
             }
         };
     }, [sessionId, url]);
 
-
-    // Add this function to start/stop the auto-refresh
-    const toggleAutoRefresh = (enabled: boolean) => {
-        setAutoRefresh(enabled);
-
-        // Clear existing timer
-        if (refreshTimerRef.current) {
-            clearInterval(refreshTimerRef.current);
-            refreshTimerRef.current = null;
+    // --- NEW useEffect for SSE Connection ---
+    useEffect(() => {
+        // Don't connect if sessionId is missing
+        if (!sessionId) {
+            console.log("SSE: No sessionId, skipping connection.");
+            return;
         }
 
-        // Start new timer if enabled
-        if (enabled && browserRef.current) {
-            refreshTimerRef.current = setInterval(async () => {
-                // Only refresh if not already loading
-                if (!isLoading && browserRef.current) {
-                    await refreshScreenshot();
+        // Ensure previous connection is closed
+        if (eventSourceRef.current) {
+            console.log("SSE: Closing previous connection.");
+            eventSourceRef.current.close();
+            eventSourceRef.current = null;
+        }
+
+        // --- IMPORTANT: Adjust the URL to your actual SSE endpoint --- 
+        // Verify this URL, it should match the one defined in your backend (e.g., main.py)
+        const sseUrl = `http://localhost:8003/task/${sessionId}/stream`; // <<< Use absolute URL with correct port and path
+        console.log(`SSE: Connecting to ${sseUrl}`);
+        
+        const newEventSource = new EventSource(sseUrl);
+        eventSourceRef.current = newEventSource;
+
+        newEventSource.onopen = () => {
+            console.log("SSE: Connection opened");
+            addLog("Live update connection established.");
+        };
+
+        // Listener for browser_update events
+        newEventSource.addEventListener('browser_update', (event) => {
+            console.log("SSE: Received browser_update event");
+            try {
+                const eventData = JSON.parse(event.data);
+                const browserState = eventData.data; 
+
+                if (browserState) {
+                    console.log("SSE: Parsed browser state:", browserState);
+                     updateBrowserState({ 
+                        success: true, 
+                        url: browserState.url,
+                        title: browserState.pageTitle, 
+                        screenshot: browserState.screenshot,
+                        formElements: browserState.formElements,
+                        historyState: browserState.historyState,
+                        // Provide default values for required fields missing from SSE payload
+                        content: '', // Default to empty string
+                        clickableElements: [], // Default to empty array
+                     });
+                     addLog(`Live update received (Step ${browserState.current_step || 'N/A'})`);
+                } else {
+                    console.warn("SSE: Received browser_update event with invalid data structure:", eventData);
                 }
-            }, refreshInterval);
-        }
-    };
-
-
-    // Add this function to manually refresh the screenshot
-    const refreshScreenshot = async () => {
-        if (!browserRef.current || isLoading) return;
-
-        setIsLoading(true);
-        try {
-            // Create a simple action that doesn't change the page but returns a fresh screenshot
-            const result = await performAction('refresh', '', undefined, sessionId);
-            if (result.success) {
-                updateBrowserState(result);
+            } catch (error) {
+                console.error("SSE: Error parsing browser_update event data:", error);
+                addLog("Error processing live update.");
             }
-        } catch (error) {
-            console.error('Error refreshing screenshot:', error);
-        } finally {
-            setIsLoading(false);
-        }
-    };
+        });
+
+        // Listener for log events (optional, if backend still sends them)
+        newEventSource.addEventListener('log', (event) => {
+             console.log("SSE: Received log event", event.data);
+             try {
+                 const logData = JSON.parse(event.data);
+                 if (logData.message) {
+                     addLog(`[Agent Log] ${logData.message}`);
+                 }
+             } catch (error) {
+                 console.error("SSE: Error parsing log event data:", error);
+             }
+        });
+        
+        // Listener for status events (optional, if backend still sends them)
+         newEventSource.addEventListener('status', (event) => {
+             console.log("SSE: Received status event", event.data);
+             try {
+                 const statusData = JSON.parse(event.data);
+                 if (statusData.message) {
+                     addLog(`[Agent Status] ${statusData.status}: ${statusData.message}`);
+                     // Maybe set loading state based on status?
+                     // setIsLoading(statusData.status === 'running'); 
+                 } 
+             } catch (error) {
+                 console.error("SSE: Error parsing status event data:", error);
+             }
+        });
+
+
+        newEventSource.onerror = (error) => {
+            console.error("SSE: Connection error:", error);
+            addLog("Live update connection error. Attempting to reconnect...");
+            // EventSource automatically attempts reconnection on errors, but close explicitly here.
+            newEventSource.close(); 
+            eventSourceRef.current = null;
+        };
+
+        // Cleanup function: close connection when component unmounts or sessionId changes
+        return () => {
+            if (newEventSource) {
+                console.log("SSE: Closing connection due to cleanup.");
+                newEventSource.close();
+                eventSourceRef.current = null;
+            }
+        };
+
+    }, [sessionId, addLog, updateBrowserState]); // Dependencies: Re-run if sessionId changes
 
     const handleNavigation = async (targetUrl: string) => {
         setIsLoading(true);
@@ -133,12 +194,6 @@ export default function InteractiveBrowser({ sessionId, url, screenshot, formEle
             if (result.success) {
                 updateBrowserState(result);
                 addLog(`Loaded: ${result.url}`);
-
-                // Restart auto-refresh after navigation
-                if (autoRefresh) {
-                    toggleAutoRefresh(false); // Stop current timer
-                    toggleAutoRefresh(true);  // Start new timer
-                }
             } else {
                 addLog(`Navigation failed`);
             }
@@ -461,6 +516,24 @@ export default function InteractiveBrowser({ sessionId, url, screenshot, formEle
         }
     };
 
+    // Keep manual refreshScreenshot function
+    const refreshScreenshot = async () => {
+        if (!browserRef.current || isLoading) return;
+
+        setIsLoading(true);
+        try {
+            // Create a simple action that doesn't change the page but returns a fresh screenshot
+            const result = await performAction('refresh', '', undefined, sessionId);
+            if (result.success) {
+                updateBrowserState(result);
+            }
+        } catch (error) {
+            console.error('Error refreshing screenshot:', error);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
     return (
         <div className="flex flex-col h-full border rounded-md overflow-hidden bg-white">
             {/* Browser Controls */}
@@ -505,6 +578,7 @@ export default function InteractiveBrowser({ sessionId, url, screenshot, formEle
                     onClick={refreshScreenshot}
                     className="px-2 py-1 bg-gray-200 rounded hover:bg-gray-300"
                     title="Refresh screenshot"
+                    disabled={isLoading}
                 >
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M21 2v6h-6"></path>
@@ -513,29 +587,6 @@ export default function InteractiveBrowser({ sessionId, url, screenshot, formEle
                         <path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path>
                     </svg>
                 </button>
-
-                <div className="flex items-center ml-2">
-                    <input
-                        type="checkbox"
-                        id="auto-refresh"
-                        checked={autoRefresh}
-                        onChange={(e) => toggleAutoRefresh(e.target.checked)}
-                        className="mr-1"
-                    />
-                    <label htmlFor="auto-refresh" className="text-sm">Auto</label>
-                </div>
-
-                <select
-                    value={refreshInterval}
-                    onChange={(e) => setRefreshInterval(Number(e.target.value))}
-                    className="ml-2 text-sm bg-gray-200 rounded p-1"
-                    disabled={!autoRefresh}
-                >
-                    <option value={1000}>1s</option>
-                    <option value={2000}>2s</option>
-                    <option value={5000}>5s</option>
-                    <option value={10000}>10s</option>
-                </select>
             </div>
 
             {/* Browser Content */}

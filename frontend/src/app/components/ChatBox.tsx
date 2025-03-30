@@ -218,6 +218,13 @@ export default function ChatBox({ initialMessages, sessionId, updateBrowserState
                      if (data.url) updateBrowserState({ url: data.url });
                  });
 
+                addEventHandler("browser_update", (parsedData) => {
+                    addLog(`Browser Update Received (Step ${parsedData.data?.current_step ?? 'N/A'})`);
+                    if (parsedData.data) {
+                        updateBrowserState(parsedData.data); 
+                    }
+                });
+
                 addEventHandler("completed", (data: TaskCompletionData) => {
                     console.log('[SSE] Task completed event received:', data);
                     setTaskStatus('completed');

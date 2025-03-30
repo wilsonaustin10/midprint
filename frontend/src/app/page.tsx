@@ -85,9 +85,12 @@ export default function Home() {
   }, [sessionId])
 
   // Add this function to update browser state from API responses
-  const updateBrowserState = (result: any) => {
+  // Wrap in useCallback to ensure a stable reference is passed down
+  const updateBrowserState = useCallback((result: any) => {
     if (!result) return;
     
+    // Use functional updates for state setters if depending on previous state,
+    // although not strictly necessary here as we're just setting new values.
     if (result.screenshot) {
       setScreenshot(result.screenshot);
     }
@@ -103,7 +106,7 @@ export default function Home() {
     if (result.url) {
       setUrl(result.url)
     }
-  }
+  }, []); // Empty dependency array because setters are stable
 
   return (
     <div className="flex flex-col min-h-screen">
