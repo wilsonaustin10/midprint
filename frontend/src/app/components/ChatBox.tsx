@@ -87,106 +87,61 @@ export default function ChatBox({ initialMessages, sessionId, updateBrowserState
     const eventSourceRef = useRef<EventSource | null>(null);
     const closedCleanlyRef = useRef<boolean>(false);
     const scrollRef = useRef<HTMLDivElement>(null);
+    const activeTaskIdRef = useRef<string | null>(null);
+    const isUnmountingRef = useRef(false);
     
     const memoizedAddLog = useCallback((log: string) => {
         addLog(log);
     }, [addLog]);
 
+    // Keep activeTaskIdRef synced with activeTaskId state
+    useEffect(() => {
+        activeTaskIdRef.current = activeTaskId;
+    }, [activeTaskId]);
+
     // Helper function to close EventSource
-    const closeEventSource = () => {
+    const closeEventSource = useCallback(() => {
+        const taskId = activeTaskIdRef.current;
         if (eventSourceRef.current) {
-            // Add log with task ID context if possible
-            const closingTaskId = eventSourceRef.current.url.split('/').pop(); // Attempt to get task ID from URL
-            console.log(`[SSE closeEventSource] Closing EventSource explicitly for task ID (from URL): ${closingTaskId}. Current activeTaskId state: ${activeTaskId}`);
+            console.log(`[SSE closeEventSource] Closing EventSource explicitly for task ID (ref): ${taskId ?? 'N/A'}. Current activeTaskId state: ${activeTaskId}`);
             eventSourceRef.current.close();
             eventSourceRef.current = null;
         } else {
-             console.log("[SSE closeEventSource] Attempted to close, but eventSourceRef.current was already null.");
+            console.log(`[SSE closeEventSource] Attempted to close, but eventSourceRef.current was already null.`);
         }
-        closedCleanlyRef.current = false; // Reset flag after closure
-        // COMMENTED OUT: Let the component lifecycle manage activeTaskId resetting
-        // setActiveTaskId(null); 
+        closedCleanlyRef.current = false;
         setIsLoading(false);
-        // Optionally reset progress info based on task status if needed
-        // If the status isn't completed/failed, maybe reset to idle/error?
         if (taskStatus !== 'completed' && taskStatus !== 'failed') {
-             // Resetting progress might be needed if closed unexpectedly
-             // setTaskProgressInfo({ current_step: null, total_steps: null, last_action: null });
-             // Consider setting taskStatus to 'idle' or 'error' here if the closure wasn't clean
         }
-    };
+    }, [activeTaskId]);
 
     // Memoize event handlers to prevent recreating them on every render
     const eventHandlers = useMemo(() => ({
       onOpen: () => {
-        console.log(`[SSE onOpen] Connection opened for task ID: ${activeTaskId}. ReadyState: ${eventSourceRef.current?.readyState}`);
+        const taskId = activeTaskIdRef.current;
+        console.log(`[SSE onOpen] Connection opened for task ID (ref): ${taskId ?? 'N/A'}. ReadyState: ${eventSourceRef.current?.readyState}`);
         addLog('SSE connection established.');
-        setTaskStatus('running'); // Assume running once opened
+        setTaskStatus('running');
         setTaskError(null);
       },
-      onError: (error: Event) => { // Use Event type for standard errors
-        const es = eventSourceRef.current;
-        const errorTaskId = es ? es.url.split('/').pop() : 'N/A';
-        const currentReadyState = es ? es.readyState : 'N/A';
-
-        console.error(`[SSE onError] Error event for task ID (from URL): ${errorTaskId}. Current activeTaskId state: ${activeTaskId}. ReadyState: ${currentReadyState}`, error);
-
-        if (!es) {
-            console.error("[SSE onError] EventSource reference is null, cannot determine state.");
-            // Potentially set error state here if appropriate
-            return;
-        };
-
-        if (closedCleanlyRef.current) {
-          console.log("[SSE onError] onError detected, but closure was marked as expected (completed/failed). Ignoring error event.");
-          // Explicitly do nothing and don't close again
-          return;
-        }
-
-        // Check specific states
-        if (currentReadyState === EventSource.CONNECTING) {
-            console.warn("[SSE onError] State: CONNECTING (0). Browser might be attempting reconnect after server closed stream OR initial connection failed.");
-            setTaskError("Connection lost or failed, attempting to reconnect...");
-        } else if (currentReadyState === EventSource.CLOSED) {
-            console.log("[SSE onError] State: CLOSED (2). Connection closed.");
-            // Differentiate between clean closure and unexpected closure
-            if (taskStatus !== 'completed' && taskStatus !== 'failed' && !closedCleanlyRef.current) {
-                 console.warn("[SSE onError] State: CLOSED, but task not marked completed/failed and not closed cleanly. Setting error state.");
-                 setTaskStatus('error');
-                 setTaskError('SSE connection closed unexpectedly.');
-                 setMessages((prev) => [...prev, { id: Date.now().toString(), role: 'assistant', content: 'Connection closed unexpectedly.' }]);
+      onError: (error: Event) => {
+        const taskId = activeTaskIdRef.current;
+        console.error(`[SSE onError] EventSource failed for task ID (ref): ${taskId ?? 'N/A'}`, error);
+        if (eventSourceRef.current) {
+            console.error(`[SSE onError] ReadyState: ${eventSourceRef.current.readyState}`);
+            if (eventSourceRef.current.readyState === EventSource.CLOSED) {
+                setTaskError(`Connection closed unexpectedly for task ${taskId ?? 'N/A'}.`);
             } else {
-                console.log("[SSE onError] State: CLOSED, but task was completed/failed or closed cleanly. Likely expected closure.");
+                setTaskError(`Connection error for task ${taskId ?? 'N/A'}.`);
             }
-        } else if (currentReadyState === EventSource.OPEN) {
-           console.error("[SSE onError] State: OPEN (1). Error occurred while connection was open. Treating as error.", error);
-           setTaskStatus('error');
-           setTaskError('SSE connection error while open.');
-           setMessages((prev) => [...prev, { id: Date.now().toString(), role: 'assistant', content: 'SSE connection error.' }]);
+            closeEventSource();
         } else {
-           console.error("[SSE onError] Unknown ReadyState:", currentReadyState, "Treating as error.", error);
-           setTaskStatus('error');
-           setTaskError('SSE connection error (unknown state).');
-           setMessages((prev) => [...prev, { id: Date.now().toString(), role: 'assistant', content: 'SSE connection error (unknown state).' }]);
-        }
-        
-        // Close source on *any* error if not already closed cleanly, to prevent loops
-        if (!closedCleanlyRef.current && es.readyState !== EventSource.CLOSED) {
-             console.log("[SSE onError] Closing EventSource due to error.");
-             closeEventSource();
-        } else if (es.readyState === EventSource.CLOSED) {
-             console.log("[SSE onError] EventSource already closed, ensuring ref is null.");
-             eventSourceRef.current = null; // Ensure ref is cleared if onError fires after close
+            setTaskError(`Connection error for task ${taskId ?? 'N/A'} (EventSource ref null).`);
         }
       },
-      // Specific event type handlers (mapped from data.type usually)
       status: (data: TaskStatusUpdate) => {
         addLog(`Task Status: ${data.status} - ${data.message || ''}`);
         setTaskStatus(data.status);
-        // Potentially update progress info based on status message if needed
-        // if (data.message) {
-        //     setTaskProgressInfo(prev => ({ ...prev, last_action: data.message }));
-        // }
       },
       log: (data: LogData) => {
         addLog(`Agent Log: ${data.message}`);
@@ -199,7 +154,6 @@ export default function ChatBox({ initialMessages, sessionId, updateBrowserState
             total_steps: data.total_steps,
             last_action: data.message || `Executing step ${data.current_step}`
         });
-        // Check if step data includes browser state
         if (data.screenshot) {
             updateBrowserState({ screenshot: data.screenshot });
         }
@@ -211,11 +165,10 @@ export default function ChatBox({ initialMessages, sessionId, updateBrowserState
         addLog(`Agent History Update (Step ${data.current_step}): ${data.message}`);
         setTaskStatus("running");
         setTaskProgressInfo(prev => ({
-            ...prev, // Keep total_steps from agent_step if available
+            ...prev,
             current_step: data.current_step,
-            last_action: data.message // Update last action with history message
+            last_action: data.message
         }));
-         // Check if history data includes browser state
         if (data.screenshot) {
             updateBrowserState({ screenshot: data.screenshot });
         }
@@ -224,157 +177,115 @@ export default function ChatBox({ initialMessages, sessionId, updateBrowserState
         }
       },
       browser_update: (data: { type: string; data: BrowserUpdateData }) => {
-        addLog(`Browser Update Received (Step ${data.data?.current_step ?? 'N/A'})`);
+        const taskId = activeTaskIdRef.current;
+        addLog(`Browser Update Received (Task: ${taskId ?? 'N/A'}, Step ${data.data?.current_step ?? 'N/A'})`);
         if (data.data) {
           console.log('[ChatBox browser_update] Calling updateBrowserState with:', data.data);
           updateBrowserState(data.data);
         }
       },
       completed: (data: TaskCompletionData) => {
-        closedCleanlyRef.current = true; // Set flag immediately
+        closedCleanlyRef.current = true;
         console.log('[SSE] Task completed event');
         setTaskStatus('completed');
         setMessages((prev) => [
           ...prev,
           { id: Date.now().toString(), role: 'assistant', content: data.result || 'Task finished.' },
         ]);
-        closeEventSource(); // Use the helper function
+        closeEventSource();
       },
       failed: (data: TaskFailureData) => {
-        closedCleanlyRef.current = true; // Set flag immediately
+        closedCleanlyRef.current = true;
         console.error('[SSE] Task failed event:', data.error);
-        setTaskStatus('failed'); // Use 'failed' status for failed tasks
+        setTaskStatus('failed');
         setTaskError(data.error || 'Task failed due to an unknown error.');
         setMessages((prev) => [
             ...prev,
             { id: Date.now().toString(), role: 'assistant', content: `Task failed: ${data.error || 'Unknown error'}` },
         ]);
-        closeEventSource(); // Use the helper function
+        closeEventSource();
       },
-      // Add other potential handlers if needed, e.g., debug
       debug: (data: any) => {
           console.log("[SSE Debug]", data);
       }
-    // We don't need onMessage here as wrappedHandler handles 'message' events
-    // Only include stable dependencies: updateBrowserState. 
-    // addLog and taskStatus are likely stable or their current value is accessible via closure.
-    }), [addLog, updateBrowserState]); // REMOVED setTaskStatus from dependencies
+    }), [addLog, updateBrowserState, setTaskStatus, setTaskError, setActiveTaskId]);
 
-    const setupSSE = () => {
-      if (!activeTaskId) {
-        console.log("[SSE setupSSE] Aborted: activeTaskId is null or empty.");
-        return;
-      }
-      if (eventSourceRef.current) {
-         console.log(`[SSE setupSSE] Aborted: EventSource already exists for task ID (from URL): ${eventSourceRef.current.url.split('/').pop()}. Current activeTaskId state: ${activeTaskId}`);
-        return;
-      }
+    const wrappedHandler = useCallback((event: MessageEvent) => {
+        try {
+            const parsedData = JSON.parse(event.data);
+            const eventType = event.type === 'message' ? parsedData.type : event.type;
 
-      console.log(`[SSE setupSSE] Starting setup for task: ${activeTaskId}`);
-      setTaskStatus('initializing');
-      setTaskError(null);
-      // Clear previous non-user messages that indicate problems or are task-specific outputs
-      setMessages((prev) => prev.filter(m => m.role === 'user' || (m.role === 'assistant' && !m.content.startsWith('Task failed') && !m.content.startsWith('Connection') && !m.content.startsWith('SSE connection'))));
-      setTaskProgressInfo({ current_step: 0, total_steps: null, last_action: 'Task starting...' });
-      closedCleanlyRef.current = false; // Explicitly reset flag here
+            if (eventType && eventHandlers[eventType as keyof typeof eventHandlers]) {
+                (eventHandlers[eventType as keyof typeof eventHandlers] as (data: any) => void)(parsedData);
+            } else if (event.type === 'message' && !parsedData.type) {
+                 console.warn("[SSE Wrapped Handler] Received 'message' event without a 'type' field in data:", parsedData);
+            } else if (event.type !== 'message') {
+                console.log(`[SSE Wrapped Handler] Received standard event: ${event.type}`);
+            } else {
+                console.warn(`[SSE Wrapped Handler] No handler found for event type: ${eventType}`);
+            }
+        } catch (e) {
+            console.error('[SSE Wrapped Handler] Error parsing JSON or handling message:', e, 'Raw data:', event.data);
+             setTaskError('Error processing message from server.');
+        }
+    }, [eventHandlers]);
 
-      try {
-        const url = `${SERVICE_BASE_URL}${ENDPOINTS.TASK_STATUS}/${activeTaskId}/stream`;
+    const setupSSE = useCallback((taskId: string) => {
+        if (!taskId) {
+            console.error("[SSE setupSSE] Attempted setup with null/empty taskId.");
+            return;
+        }
+        console.log(`[SSE setupSSE] Starting setup for task: ${taskId}`);
+        closeEventSource();
+
+        const url = `${SERVICE_BASE_URL}${ENDPOINTS.TASK_STATUS}/${taskId}/stream`;
         console.log(`[SSE setupSSE] Creating EventSource with URL: ${url}`);
         const es = new EventSource(url);
-        console.log(`[SSE setupSSE] EventSource object created for task: ${activeTaskId}. Initial readyState: ${es.readyState}`);
+        console.log(`[SSE setupSSE] EventSource object created for task: ${taskId}. Initial readyState: ${es.readyState}`);
         eventSourceRef.current = es;
 
-        // Setup standard listeners
         es.onopen = eventHandlers.onOpen;
         es.onerror = eventHandlers.onError;
 
-        // Setup custom message listener
-        const wrappedHandler = (event: MessageEvent) => {
-            // console.log('[SSE Raw Message]', event.data); // Optional: log raw data
-            try {
-                const parsedData = JSON.parse(event.data);
-                const eventType = event.type === 'message' ? parsedData.type : event.type; // Determine event type correctly
-
-                // console.log(`[SSE Wrapped Handler] Received event type: ${eventType} for task ID: ${activeTaskId}`, parsedData); // Log parsed data
-
-                // Dynamically call the correct handler based on the event type
-                if (eventType && eventHandlers[eventType as keyof typeof eventHandlers]) {
-                    // Assuming eventHandlers contains functions keyed by event type strings
-                    (eventHandlers[eventType as keyof typeof eventHandlers] as (data: any) => void)(parsedData);
-                } else if (event.type === 'message' && !parsedData.type) {
-                     console.warn("[SSE Wrapped Handler] Received 'message' event without a 'type' field in data:", parsedData);
-                } else if (event.type !== 'message') {
-                    console.log(`[SSE Wrapped Handler] Received standard event: ${event.type}`); // e.g., 'open', 'error' - handled by direct listeners
-                } else {
-                    console.warn(`[SSE Wrapped Handler] No handler found for event type: ${eventType}`);
-                }
-            } catch (e) {
-                console.error('[SSE Wrapped Handler] Error parsing JSON or handling message:', e, 'Raw data:', event.data);
-                 setTaskError('Error processing message from server.');
-                 // Consider closing connection on parse error if it's persistent
-                 // closeEventSource(); 
-            }
-        };
-
-        // Add listener for general 'message' events (if backend sends events without specific event names)
-        // And add listeners for specific event names if the backend uses them
-        es.addEventListener('message', wrappedHandler); // Handles events with `event: message` or no `event` field
-        // Add specific listeners if backend sends named events like `event: status`, `event: log` etc.
+        es.addEventListener('message', wrappedHandler);
         Object.keys(eventHandlers).forEach(eventType => {
-            if (eventType !== 'onOpen' && eventType !== 'onError') { // Standard handlers are set directly
+            if (eventType !== 'onOpen' && eventType !== 'onError') {
                 es.addEventListener(eventType, wrappedHandler);
             }
         });
-         console.log(`[SSE setupSSE] Event listeners attached for task: ${activeTaskId}`);
+         console.log(`[SSE setupSSE] Event listeners attached for task: ${taskId}`);
 
-      } catch (error) {
-        console.error(`[SSE setupSSE] Error creating EventSource for task ${activeTaskId}:`, error);
-        setTaskStatus('error');
-        setTaskError(`Failed to initialize connection: ${error instanceof Error ? error.message : String(error)}`);
-        setActiveTaskId(null); // Clear task ID on setup failure
-      }
-    };
+    }, [closeEventSource, eventHandlers, wrappedHandler]);
 
     // Add this ref before the useEffect
     const isInitialMount = useRef(true);
-    const isUnmounting = useRef(false);
 
     // Replace the existing useEffect
     useEffect(() => {
         console.log(`[SSE useEffect] Running effect. activeTaskId: ${activeTaskId}`);
 
-        // Skip setup on initial mount with no activeTaskId
         if (isInitialMount.current && !activeTaskId) {
             isInitialMount.current = false;
             return;
         }
 
-        // Reset unmounting flag on each effect run
-        isUnmounting.current = false;
+        isUnmountingRef.current = false;
 
         if (activeTaskId) {
-            // Only setup if we don't already have a connection for this task
-            if (!eventSourceRef.current || eventSourceRef.current.url.split('/').pop() !== activeTaskId) {
-                setupSSE();
-            }
+            setupSSE(activeTaskId);
         } else {
-            // If there's no active task, ensure any existing connection is closed
             console.log("[SSE useEffect] activeTaskId is null, ensuring connection is closed.");
             closeEventSource();
         }
 
-        // Cleanup function
         return () => {
             console.log(`[SSE useEffect Cleanup] Running cleanup for task ID (state): ${activeTaskId}. EventSource ref exists: ${!!eventSourceRef.current}`);
             
-            // Skip cleanup if we're just re-rendering with the same task
-            if (eventSourceRef.current?.url.split('/').pop() === activeTaskId && !isUnmounting.current) {
+            if (eventSourceRef.current?.url.split('/').pop() === activeTaskId && !isUnmountingRef.current) {
                 console.log("[SSE useEffect Cleanup] Skipping cleanup as task ID hasn't changed and component isn't unmounting");
                 return;
             }
 
-            // Only warn about unexpected closures if we have an active connection that wasn't marked as cleanly closed
             if (!closedCleanlyRef.current && eventSourceRef.current) {
                 console.warn("[SSE useEffect Cleanup] Closing EventSource due to task change or unmount");
             } else if (closedCleanlyRef.current) {
@@ -383,12 +294,12 @@ export default function ChatBox({ initialMessages, sessionId, updateBrowserState
 
             closeEventSource();
         };
-    }, [activeTaskId]);
+    }, [activeTaskId, setupSSE, closeEventSource]);
 
     // Add a new useEffect for component unmount detection
     useEffect(() => {
         return () => {
-            isUnmounting.current = true;
+            isUnmountingRef.current = true;
         };
     }, []);
 

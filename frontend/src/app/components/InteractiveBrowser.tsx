@@ -41,6 +41,22 @@ export default function InteractiveBrowser({ sessionId, url, screenshot, formEle
     const [focusedFormElement, setFocusedFormElement] = useState<FormElement | null>(null)
     const eventSourceRef = useRef<EventSource | null>(null); // Ref to hold the EventSource instance
 
+    // Add screenshot debug logging
+    useEffect(() => {
+        if (screenshot) {
+            console.log(`[InteractiveBrowser] Screenshot string length: ${screenshot.length}`);
+            console.log(`[InteractiveBrowser] Screenshot string starts with: ${screenshot.substring(0, 50)}`);
+            console.log(`[InteractiveBrowser] Screenshot string ends with: ${screenshot.substring(screenshot.length - 50)}`);
+        }
+    }, [screenshot]);
+
+    // Effect to turn off loading when a new screenshot arrives via props
+    useEffect(() => {
+        if (screenshot) { // Check if screenshot prop has a value
+            setIsLoading(false);
+        }
+    }, [screenshot]);
+
     // Initialize session and connect to SSE
     useEffect(() => {
         // Prevent any browser updates until sessionId is defined
@@ -496,6 +512,7 @@ export default function InteractiveBrowser({ sessionId, url, screenshot, formEle
 
                 {screenshot ? (
                     <img
+                        key={screenshot.substring(0, 100)}
                         src={screenshot}
                         alt="Browser content"
                         className="w-full h-auto"

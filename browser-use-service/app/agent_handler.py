@@ -32,9 +32,9 @@ class SSELogHandler(logging.Handler):
     # --- ADDED: Method to trigger state capture via agent_handler ---
     def _trigger_state_capture(self):
         # --- MODIFIED: Check if agent_handler exists AND is active ---
-        if self.agent_handler and hasattr(self.agent_handler, 'is_active') and self.agent_handler.is_active and hasattr(self.agent_handler, 'capture_and_push_browser_state'):
-            # Create a task to run the async capture method without blocking the logger
-            asyncio.create_task(self.agent_handler.capture_and_push_browser_state(trigger_event="SSELogHandler"))
+        if self.agent_handler and self.agent_handler.is_active:
+            # --- CORRECTED: Use 'trigger' instead of 'trigger_event' ---
+            asyncio.create_task(self.agent_handler.capture_and_push_browser_state(trigger="SSELogHandler"))
         elif self.agent_handler and hasattr(self.agent_handler, 'is_active') and not self.agent_handler.is_active:
             # Use print to avoid logger recursion if agent is inactive
             print(f"[SSELogHandler INFO {self.task_id}] Skipping state capture trigger: AgentHandler is inactive.")
@@ -474,28 +474,43 @@ class AgentHandler:
             # --- Add detailed logging of agent_history_list ---
             logger.info(f"[AgentHandler {self.task_id}] Agent execution completed. Inspecting agent_history_list:")
             logger.info(f"[AgentHandler {self.task_id}] Type: {type(agent_history_list)}")
-            logger.info(f"[AgentHandler {self.task_id}] Is successful: {getattr(agent_history_list, 'is_successful', None)}")
-            logger.info(f"[AgentHandler {self.task_id}] Has action_results: {hasattr(agent_history_list, 'action_results')}")
+            # --- Call is_successful as a method --- 
+            is_successful_val = getattr(agent_history_list, 'is_successful', lambda: None)() # Call directly if possible
+            logger.info(f"[AgentHandler {self.task_id}] Is successful: {is_successful_val}")
+            logger.info(f"[AgentHandler {self.task_id}] Has action_results attribute/method: {hasattr(agent_history_list, 'action_results')}")
+            action_results_list = None
             if hasattr(agent_history_list, 'action_results'):
-                logger.info(f"[AgentHandler {self.task_id}] Number of action results: {len(agent_history_list.action_results)}")
-                for i, result in enumerate(agent_history_list.action_results):
-                    logger.info(f"[AgentHandler {self.task_id}] Action result {i}: Type={type(result)}, Has dict method={hasattr(result, 'dict')}")
-            logger.info(f"[AgentHandler {self.task_id}] Has final_result: {hasattr(agent_history_list, 'final_result')}")
-            if hasattr(agent_history_list, 'final_result'):
-                final_result = agent_history_list.final_result
-                logger.info(f"[AgentHandler {self.task_id}] Final result type: {type(final_result)}")
-                logger.info(f"[AgentHandler {self.task_id}] Final result has answer: {hasattr(final_result, 'answer')}")
-                logger.info(f"[AgentHandler {self.task_id}] Final result has error: {hasattr(final_result, 'error')}")
+                action_results_method_or_attr = getattr(agent_history_list, 'action_results')
+                if callable(action_results_method_or_attr):
+                    # --- Call action_results as a method --- 
+                    action_results_list = action_results_method_or_attr()
+                    logger.info(f"[AgentHandler {self.task_id}] Called action_results() method.")
+                elif isinstance(action_results_method_or_attr, list):
+                    action_results_list = action_results_method_or_attr # It's already a list
+                    logger.info(f"[AgentHandler {self.task_id}] Accessed action_results attribute (list).")
+                else:
+                    logger.warning(f"[AgentHandler {self.task_id}] action_results is neither callable nor a list. Type: {type(action_results_method_or_attr)}")
+
+            if action_results_list is not None:
+                 logger.info(f"[AgentHandler {self.task_id}] Number of action results: {len(action_results_list)}")
+                 for i, result in enumerate(action_results_list):
+                     logger.info(f"[AgentHandler {self.task_id}] Action result {i}: Type={type(result)}, Has dict method={hasattr(result, 'dict')}")
+            else:
+                 logger.info(f"[AgentHandler {self.task_id}] Could not retrieve action results list.")
 
             logger.info(f"[AgentHandler {self.task_id}] Finished agent execution.")
             
             # --- Process Final Results --- 
             if agent_history_list:
-                 final_result_dict["success"] = agent_history_list.is_successful
+                 # --- Use the stored is_successful_val --- 
+                 final_result_dict["success"] = is_successful_val if is_successful_val is not None else False 
                  temp_history = []
-                 if hasattr(agent_history_list, 'action_results') and isinstance(agent_history_list.action_results, list):
-                     for res in agent_history_list.action_results:
+                 # --- Use the stored action_results_list --- 
+                 if action_results_list is not None and isinstance(action_results_list, list):
+                     logger.info(f"[AgentHandler {self.task_id}] Processing {len(action_results_list)} items from action_results_list for history.")
+                     for res in action_results_list:
                          try:
+                             # Use .dict() if available, otherwise convert to string
                              temp_history.append(res.dict() if hasattr(res, 'dict') else str(res))
                          except Exception as hist_err:
                              logger.warning(f"[AgentHandler {self.task_id}] Error serializing history item: {hist_err}")
@@ -569,60 +584,36 @@ class AgentHandler:
             return {"success": False, "error": str(e)} 
 
     # --- ADDED: capture_and_push_browser_state method MODIFIED --- 
-    async def capture_and_push_browser_state(self, trigger_event: str = "Unknown"):
+    async def capture_and_push_browser_state(self, trigger: str = "Unknown"):
         """Captures current browser state and pushes it to the SSE queue."""
-        # Check if handler is inactive first
-        if not self.is_active:
-            logger.info(f"[AgentHandler {self.task_id}] Skipping state capture ({trigger_event}): Handler is inactive.")
+        if not self.is_active: # Check if the handler is still active
+            logger.warning(f"[AgentHandler {self.task_id}] Skipping state capture (Trigger: {trigger})... Handler is inactive.")
             return
 
-        logger.info(f"[AgentHandler {self.task_id}] Triggered state capture ({trigger_event}).")
+        current_state = await self._get_current_browser_state()
+        if not current_state or not current_state.get('screenshot'):
+            logger.warning(
+                f"[AgentHandler {self.task_id}] Captured state is invalid (Trigger: {trigger}): "
+                f"Empty state or missing screenshot. Skipping SSE push for browser_update, sending failure event."
+            )
+            await self.sse_queue.put({"type": "state_capture_failed", "message": "Failed to capture valid browser state"})
+            return
+
+        # ---> ADD LOGGING HERE <---
+        page_url = "N/A"
+        page_title = "N/A"
         try:
-            browser_state = await self._get_current_browser_state()
-            
-            # --- Check if state is invalid (empty or missing screenshot) --- 
-            if not browser_state or browser_state.get("screenshot") is None:
-                reason = "Empty state or missing screenshot"
-                logger.warning(f"[AgentHandler {self.task_id}] Captured state is invalid: {reason}. Skipping SSE push for browser_update, sending failure event.")
-                try:
-                    # Push a failure event instead
-                    self.sse_queue.put_nowait({
-                        "type": "state_capture_failed",
-                        "reason": reason,
-                        "trigger": trigger_event
-                    })
-                    logger.info(f"[AgentHandler {self.task_id}] Pushed 'state_capture_failed' event to queue.")
-                except asyncio.QueueFull:
-                    logger.error(f"[AgentHandler {self.task_id}] SSE queue full. Failed to put 'state_capture_failed' event.")
-                except Exception as qe:
-                    logger.error(f"[AgentHandler {self.task_id}] Error pushing 'state_capture_failed' event: {qe}")
-                return # Stop processing here if state is invalid
-
-            # --- If state is valid, push the browser_update event --- 
-            sse_event_data = {
-                "type": "browser_update",
-                "data": browser_state
-            }
-            self.sse_queue.put_nowait(sse_event_data)
-            logger.info(f"[AgentHandler {self.task_id}] Successfully put 'browser_update' event into queue (Trigger: {trigger_event}).")
-
-        except asyncio.QueueFull:
-            # This catches QueueFull specifically from the successful put_nowait above
-            logger.error(f"[AgentHandler {self.task_id}] SSE queue is full. Failed to put browser_update (Trigger: {trigger_event}).")
+            if self.controller and self.controller.page and not self.controller.page.is_closed():
+                page_url = self.controller.page.url
+                page_title = await self.controller.page.title()
+            else:
+                 logger.warning(f"[AgentHandler {self.task_id}] Cannot get URL/Title for state capture (Trigger: {trigger}): Page or controller missing/closed.")
         except Exception as e:
-            # --- Handle general exceptions during capture/push --- 
-            reason = f"Exception during capture/push: {str(e)}"
-            logger.error(f"[AgentHandler {self.task_id}] Error capturing/pushing state (Trigger: {trigger_event}): {e}", exc_info=True)
-            try:
-                # Attempt to push a failure event even on exception
-                self.sse_queue.put_nowait({
-                    "type": "state_capture_failed",
-                    "reason": reason,
-                    "trigger": trigger_event
-                })
-                logger.info(f"[AgentHandler {self.task_id}] Pushed 'state_capture_failed' event to queue due to exception.")
-            except asyncio.QueueFull:
-                logger.error(f"[AgentHandler {self.task_id}] SSE queue full. Failed to put 'state_capture_failed' event (during exception handling).")
-            except Exception as qe_ex:
-                logger.error(f"[AgentHandler {self.task_id}] Error pushing 'state_capture_failed' event during exception handling: {qe_ex}")
+            logger.error(f"[AgentHandler {self.task_id}] Error getting URL/Title for state capture (Trigger: {trigger}): {e}")
+            
+        logger.info(f"[AgentHandler {self.task_id}] Preparing to push 'browser_update' (Trigger: {trigger}). Current Page URL: {page_url}, Title: \"{page_title}\". Screenshot data length: {len(current_state.get('screenshot', ''))}")
+        # ---> END LOGGING <---
+
+        await self.sse_queue.put({"type": "browser_update", "data": current_state})
+        logger.info(f"[AgentHandler {self.task_id}] Successfully put 'browser_update' event into queue (Trigger: {trigger}).")
     # --- END MODIFIED --- 
