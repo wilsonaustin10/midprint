@@ -24,9 +24,10 @@ export type P = {
     updateBrowserState: (result: ActionResult) => void;
     logs: string[];
     addLog: (message: string) => void;
+    screenshotUpdateKey: number;
 }
 
-export default function InteractiveBrowser({ sessionId, url, screenshot, formElements, historyState, setUrl, updateBrowserState, logs, addLog }: P) {
+export default function InteractiveBrowser({ sessionId, url, screenshot, formElements, historyState, setUrl, updateBrowserState, logs, addLog, screenshotUpdateKey }: P) {
     
     const [isLoading, setIsLoading] = useState<boolean>(false)
     const [isLoginDialogOpen, setIsLoginDialogOpen] = useState(false)
@@ -512,10 +513,10 @@ export default function InteractiveBrowser({ sessionId, url, screenshot, formEle
 
                 {screenshot ? (
                     <img
-                        key={screenshot.substring(0, 100)}
+                        key={screenshotUpdateKey}
                         src={screenshot}
                         alt="Browser content"
-                        className="w-full h-auto"
+                        className="w-full h-auto transition-none"
                         onClick={handleScreenshotClick}
                     />
                 ) : (

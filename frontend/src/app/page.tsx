@@ -21,6 +21,7 @@ export default function Home() {
   const [screenshot, setScreenshot] = useState<string>('')
   const [pageTitle, setPageTitle] = useState<string>('')
   const [formElements, setFormElements] = useState<FormElement[]>([])
+  const [screenshotUpdateKey, setScreenshotUpdateKey] = useState<number>(0);
   const [historyState, setHistoryState] = useState<{
     canGoBack?: boolean;
     canGoForward?: boolean;
@@ -65,6 +66,7 @@ export default function Home() {
     if (result.screenshot) {
       console.log(`[page.tsx updateBrowserState] Updating screenshot.`);
       setScreenshot(result.screenshot);
+      setScreenshotUpdateKey(k => k + 1);
     }
     if (result.pageTitle) {
       console.log(`[page.tsx updateBrowserState] Updating pageTitle to: ${result.pageTitle}`);
@@ -112,6 +114,7 @@ export default function Home() {
               historyState={historyState}
               sessionId={sessionId} 
               updateBrowserState={updateBrowserState} 
+              screenshotUpdateKey={screenshotUpdateKey}
               logs={logs}
               addLog={addLog}
             />
